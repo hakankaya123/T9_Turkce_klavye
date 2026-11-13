@@ -1,0 +1,4 @@
+# Ek R8 kuralı gerekmiyor:
+# - Manifest'teki servis ve activity'ler AGP tarafından otomatik korunur.
+# - IconView / JoystickView yalnızca kodla oluşturulur (XML'den şişirilmez).
+# - Veri sınıfları yansıma (reflection) kullanmaz; JSON org.json ile elle okunur.
