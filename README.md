@@ -79,6 +79,4 @@ Hata bildirimi ve öneriler için **Issues** bölümünü kullanabilirsiniz. Pul
 
 ## Lisans
 
-## Lisans
-
 Bu proje [MIT Lisansı](LICENSE) ile yayınlanmıştır.
