@@ -25,7 +25,7 @@
 
 1. Bu depoyu klonlayın:
    ```bash
-   git clone https://github.com/hakankaya123/com.example.t9keyboard.git
+   git clone https://github.com/hakankaya123/T9_Turkce_klavye.git
    ```
 2. Projeyi **Android Studio** ile açın.
 3. Gradle senkronizasyonu bitince cihazınızda veya emülatörde çalıştırın (**Run ▶**).
