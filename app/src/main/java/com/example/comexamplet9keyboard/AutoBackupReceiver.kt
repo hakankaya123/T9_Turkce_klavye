@@ -13,12 +13,14 @@ class AutoBackupReceiver : BroadcastReceiver() {
         val app = context.applicationContext
         if (!AutoBackup.isEnabled(app)) return
         AutoBackup.schedule(app)
-        val runNow = if (intent.action == AutoBackup.ACTION_RUN) true else AutoBackup.missedSinceLastRun(app)
+        val isAlarm = intent.action == AutoBackup.ACTION_RUN
+        val runNow = isAlarm || AutoBackup.missedSinceLastRun(app)
         if (!runNow) return
+        val source = if (isAlarm) "alarm" else "açılış"
         val result = goAsync()
         Thread {
             try {
-                AutoBackup.runBackup(app)
+                AutoBackup.runBackup(app, source)
             } finally {
                 result.finish()
             }

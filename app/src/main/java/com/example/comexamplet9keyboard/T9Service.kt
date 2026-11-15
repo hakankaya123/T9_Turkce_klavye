@@ -79,7 +79,7 @@ class T9Service : InputMethodService() {
     private var lastRev = 0L
     private fun prefRev() = prefs.getLong("dict_rev", 0L)
     internal val prefs by lazy { getSharedPreferences("t9", MODE_PRIVATE) }
-    internal var dd = DictData(this, { prefs }, handler)
+    internal var dd = DictData(this, handler)
     internal var voiceInputEnabled: Boolean
         get() = prefs.getBoolean("voice_input_enabled", true)
         set(v) = prefs.edit { putBoolean("voice_input_enabled", v) }
@@ -124,6 +124,65 @@ class T9Service : InputMethodService() {
     // (pendKey / dirId) sıfırlanır ve "abc" tuşuna tekrar basınca hep "a" yazılırdı. Son dokunuşu ayrıca
     // hatırlıyoruz: aynı tuşa 900 ms içinde tekrar basılırsa ve harf hâlâ imlecin hemen solundaysa
     // harfi silip sıradakini yazarız.
+    // Bazı uygulamalar (ör. Ziraat Mobil) düz metin alanlarını da "görünür şifre" türüyle bildirir
+    // (inputType 0x80091 = metin + TYPE_TEXT_VARIATION_VISIBLE_PASSWORD + NO_SUGGESTIONS). Bu alanlarda tahmin
+    // varsayılan olarak kapalıdır. Kullanıcı, ayarlardan uygulama bazında "Zorla Tahmin" açabilir.
+    // Gerçek şifre (gizli) ve sayısal şifre alanlarında tahmin her zaman kapalı kalır.
+    private var forcedPkgs: Set<String> = emptySet()
+    internal var forcedHere = false
+
+    private fun visiblePasswordField(): Boolean {
+        val t = currentInputEditorInfo?.inputType ?: return false
+        return (t and InputType.TYPE_MASK_CLASS) == InputType.TYPE_CLASS_TEXT &&
+                (t and InputType.TYPE_MASK_VARIATION) == InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
+    }
+
+    // "a✓" tuşu. Normal alanlarda tahmini açar/kapatır. Uygulama düz metin alanını "görünür şifre" olarak
+    // bildiriyorsa (ör. Ziraat Mobil) tahmin başta kapalıdır; tuşa basınca bu uygulama için açılır,
+    // tahmin açıkken tekrar basınca bu uygulamada yine kapanır. Seçim uygulama bazında hatırlanır.
+    private fun onPredictionKey() {
+        val pkg = currentInputEditorInfo?.packageName
+        if (visiblePasswordField() && pkg != null) {
+            when {
+                !forcedHere -> {
+                    toggleForcedPrediction(pkg); predictive = true
+                }
+
+                !predictive -> predictive = true
+                else -> toggleForcedPrediction(pkg)
+            }
+        } else {
+            predictive = !predictive
+        }
+    }
+
+    internal fun toggleForcedPrediction(pkg: String) {
+        val n = HashSet(forcedPkgs)
+        if (!n.add(pkg)) n.remove(pkg)
+        forcedPkgs = n
+        prefs.edit { putStringSet("force_pred_pkgs", n) }
+        forcedHere = pkg in n
+    }
+
+    // Parola benzeri alanlarda (gizli, görünür, web, sayısal) yazılanlardan hiçbir şey öğrenilmez.
+    private fun passwordLikeField(): Boolean {
+        val t = currentInputEditorInfo?.inputType ?: return false
+        return when (t and InputType.TYPE_MASK_CLASS) {
+            InputType.TYPE_CLASS_TEXT -> when (t and InputType.TYPE_MASK_VARIATION) {
+                InputType.TYPE_TEXT_VARIATION_PASSWORD,
+                InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD,
+                InputType.TYPE_TEXT_VARIATION_WEB_PASSWORD -> true
+
+                else -> false
+            }
+
+            InputType.TYPE_CLASS_NUMBER ->
+                (t and InputType.TYPE_MASK_VARIATION) == InputType.TYPE_NUMBER_VARIATION_PASSWORD
+
+            else -> false
+        }
+    }
+
     private var lastTapId: String? = null
     private var lastTapIdx = 0
     private var lastTapChar = ""
@@ -214,13 +273,14 @@ class T9Service : InputMethodService() {
     override fun onCreate() {
         super.onCreate()
         AutoBackup.ensureScheduled(this)
+        forcedPkgs = prefs.getStringSet("force_pred_pkgs", null)?.toSet() ?: emptySet()
         lightTheme = prefs.getBoolean("theme_light", false)
         applyTheme()
 
         // Sözlük, arka planda ayrı bir nesneye yüklenir ve bitince ana iş parçacığında devreye alınır;
         // böylece yükleme sürerken ana iş parçacığı yarım dolu koleksiyonları okumaz.
         serviceScope.launch(Dispatchers.IO) {
-            val nd = DictData(this@T9Service, { prefs }, handler)
+            val nd = DictData(this@T9Service, handler)
             nd.loadBase()
             val migrate = !prefs.getBoolean("uc_v2", false)
             nd.loadUser(migrate)
@@ -250,6 +310,26 @@ class T9Service : InputMethodService() {
     override fun onStartInputView(info: EditorInfo?, restarting: Boolean) {
         super.onStartInputView(info, restarting)
         syncUserDictionary()
+        forcedHere = info?.packageName?.let { it in forcedPkgs } == true
+        // Alarm çalışmadıysa (bazı üreticiler arka plan alarmlarını engeller) yedeği klavye açılırken al.
+        AutoBackup.runIfMissed(applicationContext, "klavye")
+        // Yalnızca hata ayıklama (debug) derlemelerinde: alan bilgisini logla (metin içeriği değil).
+        if ((applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0) {
+            Log.d(
+                TAG,
+                "alan: pkg=${info?.packageName} inputType=0x${Integer.toHexString(info?.inputType ?: 0)} " +
+                        "imeOptions=0x${Integer.toHexString(info?.imeOptions ?: 0)} restarting=$restarting " +
+                        "tahmin=${predictiveEffective()} direkt=${directInput()} zorla=$forcedHere selStart=${info?.initialSelStart} " +
+                        "yazımOrtası=${composingActive()}"
+            )
+        }
+        // Bazı uygulamalar (Compose, React Native, hibrit bankacılık alanları) her tuştan sonra girişi yeniden
+        // başlatır. Yazım ortasındaysak durumu silmeyiz; yazdığımız metin hâlâ imlecin solundaysa
+        // birleştirme (composing) bölgesini yeniden kurup kaldığımız yerden devam ederiz.
+        if (restarting && info != null && tryKeepComposing(info)) {
+            updatePredLook()
+            return
+        }
         val keep = if (restarting && stashedChip != null &&
             SystemClock.uptimeMillis() - stashedChipTime < 2500
         ) stashedChip else null
@@ -271,6 +351,20 @@ class T9Service : InputMethodService() {
             }
             lastFieldNumeric = numeric
         }
+    }
+
+    private fun tryKeepComposing(info: EditorInfo): Boolean {
+        if (!composingActive() || attach != null || symComposing) return false
+        val c = composingString() ?: return false
+        if (c.isEmpty()) return false
+        val ic = currentInputConnection ?: return false
+        val end = info.initialSelStart
+        if (end < c.length || info.initialSelEnd != end) return false
+        val before = ic.getTextBeforeCursor(c.length, 0)?.toString() ?: return false
+        if (!before.equals(c, ignoreCase = true)) return false
+        val ok = ic.setComposingRegion(end - c.length, end)
+        if (ok) Log.i(TAG, "uygulama girişi yeniden başlattı; yazım durumu korundu")
+        return ok
     }
 
     override fun onFinishInput() {
@@ -322,7 +416,7 @@ class T9Service : InputMethodService() {
     private fun addWord(w: String) = dd.addWord(w)
 
     internal fun saveUserData() {
-        if ((prefs.getString("uc", "") ?: "") != lastUc || prefRev() != lastRev) {
+        if (UserDataStore.readAddedWords(this) != lastUc || prefRev() != lastRev) {
             rebuildDictionary(); return
         }
         if (rebuilding) return
@@ -331,22 +425,13 @@ class T9Service : InputMethodService() {
         // Haritalar ana iş parçacığında değiştiği için metin de burada üretilir (başka iş parçacığında
         // dolaşmak ConcurrentModificationException'a yol açabiliyordu). Diske yazma zaten apply() ile asenkron.
         pruneUserBigram()
-        val a = StringBuilder()
-        val lc = StringBuilder()
+        val addedWords = linkedMapOf<String, Int>()
+        val learnedWords = linkedMapOf<String, Int>()
         userCount.forEach { (w, c) ->
-            if (userWords.contains(w)) a.append(w).append('\t').append(c).append('\n')
-            else lc.append(w).append('\t').append(c).append('\n')
+            if (userWords.contains(w)) addedWords[w] = c
+            else learnedWords[w] = c
         }
-        val b = StringBuilder()
-        userBigram.forEach { (p, m) ->
-            m.forEach { (w, c) ->
-                b.append(p).append('\t').append(w).append('\t').append(c).append('\n')
-            }
-        }
-        lastUc = a.toString()
-        prefs.edit {
-            putString("uc", lastUc).putString("lc", lc.toString()).putString("ub", b.toString())
-        }
+        lastUc = UserDataStore.save(this, addedWords, learnedWords, userBigram).addedWords
     }
 
     // Kelime çiftleri sınırsız büyürse her kayıtta devasa bir metin yeniden yazılırdı; üst sınırı koru.
@@ -377,7 +462,7 @@ class T9Service : InputMethodService() {
         rebuilding = true
         val revAtStart = prefRev()
         serviceScope.launch(Dispatchers.IO) {
-            val nd = DictData(this@T9Service, { prefs }, handler)
+            val nd = DictData(this@T9Service, handler)
             try {
                 nd.loadBase(); nd.loadUser(false)
             } catch (e: Exception) {
@@ -385,7 +470,7 @@ class T9Service : InputMethodService() {
             }
             withContext(Dispatchers.Main) {
                 rebuilding = false
-                val cur = prefs.getString("uc", "") ?: ""
+                val cur = UserDataStore.readAddedWords(this@T9Service)
                 if (cur != nd.uc || prefRev() != revAtStart) {
                     rebuildDictionary()
                 } else {
@@ -399,7 +484,7 @@ class T9Service : InputMethodService() {
     }
 
     private fun syncUserDictionary() {
-        val cur = prefs.getString("uc", "") ?: ""
+        val cur = UserDataStore.readAddedWords(this)
         if (cur != lastUc || prefRev() != lastRev) rebuildDictionary()
     }
 
@@ -416,6 +501,9 @@ class T9Service : InputMethodService() {
     private fun composingGlued(): Boolean = gluedToLetter(composingString()?.length ?: 0)
 
     private fun learn(w0: String) {
+        if (passwordLikeField()) {
+            prevWord = null; return
+        }
         val w = w0.lowercase(tr)
         if (w.length < 2 || !w.all { charToDigit.containsKey(it) }) {
             prevWord = null; return
@@ -988,7 +1076,7 @@ class T9Service : InputMethodService() {
         addWord(w)
         userWords.add(w)
         userCount[w] = (userCount[w] ?: 0) + 1
-        if ((prefs.getString("uc", "") ?: "") != lastUc || rebuilding) {
+        if (UserDataStore.readAddedWords(this) != lastUc || rebuilding) {
             UserDictionaryStore.add(this, w)
             rebuildDictionary()
         } else saveUserData()
@@ -1162,10 +1250,11 @@ class T9Service : InputMethodService() {
         val t = currentInputEditorInfo?.inputType ?: return false
         if ((t and InputType.TYPE_MASK_CLASS) != InputType.TYPE_CLASS_TEXT) return false
         return when (t and InputType.TYPE_MASK_VARIATION) {
+            InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD -> !forcedHere
+
             InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS,
             InputType.TYPE_TEXT_VARIATION_WEB_EMAIL_ADDRESS,
             InputType.TYPE_TEXT_VARIATION_PASSWORD,
-            InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD,
             InputType.TYPE_TEXT_VARIATION_WEB_PASSWORD -> true
 
             else -> false
@@ -1184,8 +1273,9 @@ class T9Service : InputMethodService() {
         val t = ei.inputType
         return when (t and InputType.TYPE_MASK_CLASS) {
             InputType.TYPE_CLASS_TEXT -> when (t and InputType.TYPE_MASK_VARIATION) {
+                InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD -> !forcedHere
+
                 InputType.TYPE_TEXT_VARIATION_PASSWORD,
-                InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD,
                 InputType.TYPE_TEXT_VARIATION_WEB_PASSWORD -> true
 
                 else -> false
@@ -1569,8 +1659,9 @@ class T9Service : InputMethodService() {
         add(right, key("⌫", accent = true, repeat = true, accel = true) { backspace() }, 1f)
         val pk = key("a✓", sub = "0", accent = true, onLong = { typeText("0") }) {
             commitWord(false)
-            predictive = !predictive
+            onPredictionKey()
             updatePredLook()
+            updateSuggestions()
         }
         predView = pk.tag as TextView
         updatePredLook()

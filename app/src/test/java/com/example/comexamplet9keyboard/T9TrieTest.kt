@@ -32,6 +32,27 @@ class T9TrieTest {
     }
 
     @Test
+    fun explicitFrequenciesRankExactMatchesAndPrefixes() {
+        val t = T9Trie()
+        t.insert(T9Code("222"), WordIndex(0), frequency = 10)
+        t.insert(T9Code("2"), WordIndex(1), frequency = 20)
+        t.insert(T9Code("299"), WordIndex(2), frequency = 90)
+        t.insert(T9Code("2"), WordIndex(3), frequency = 70)
+
+        assertArrayEquals(intArrayOf(3, 1, 2, 0), t.search("2"))
+        assertArrayEquals(intArrayOf(2), t.search("29"))
+    }
+
+    @Test
+    fun equalFrequenciesKeepInsertionOrder() {
+        val t = T9Trie()
+        t.insert(T9Code("22"), WordIndex(8), frequency = 5)
+        t.insert(T9Code("22"), WordIndex(3), frequency = 5)
+
+        assertArrayEquals(intArrayOf(8, 3), t.search("22"))
+    }
+
+    @Test
     fun duplicateIndexIsNotAddedTwice() {
         val t = trie("22" to 1, "22" to 1)
         assertArrayEquals(intArrayOf(1), t.search("22"))

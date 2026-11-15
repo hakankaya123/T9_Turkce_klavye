@@ -14,9 +14,7 @@ class T9Trie {
         // Her düğüm için ayrı boş dizi üretmemek için paylaşılan sabit.
         private val EMPTY = IntArray(0)
 
-        // İlk TOP_DEPTH tuşluk önekler için, alt ağaçtaki en küçük (= en sık kullanılan) TOP_K indeks
-        // önceden tutulur. Böylece "2" ya da "46" gibi kısa öneklerde tüm ağacı gezmeye gerek kalmaz
-        // ve sonuç, ağaç gezme sırasına değil sözlük (frekans) sırasına göre gelir.
+        // İlk TOP_DEPTH tuşluk önekler için en yüksek öncelikli TOP_K indeks önceden tutulur.
         const val TOP_DEPTH = 4
         const val TOP_K = 32
     }
@@ -28,7 +26,7 @@ class T9Trie {
         // Boxing maliyetini önlemek için IntArray (bu düğümde BİTEN kelimeler)
         var candidateIndices = EMPTY
 
-        // Alt ağacın en küçük TOP_K indeksi (artan sırada); yalnızca 1..TOP_DEPTH derinliğindeki düğümlerde dolu.
+        // Alt ağacın önceliği en yüksek TOP_K indeksi; yalnızca 1..TOP_DEPTH derinliğindeki düğümlerde dolu.
         var top: IntArray? = null
         var topCount = 0
 
@@ -39,11 +37,11 @@ class T9Trie {
             return true
         }
 
-        fun offerTop(index: Int) {
+        fun offerTop(index: Int, comesBefore: (Int, Int) -> Boolean) {
             val t = top ?: IntArray(TOP_K).also { top = it }
-            if (topCount == TOP_K && index >= t[TOP_K - 1]) return
+            if (topCount == TOP_K && !comesBefore(index, t[TOP_K - 1])) return
             var pos = if (topCount < TOP_K) topCount else TOP_K - 1
-            while (pos > 0 && t[pos - 1] > index) {
+            while (pos > 0 && comesBefore(index, t[pos - 1])) {
                 t[pos] = t[pos - 1]
                 pos--
             }
@@ -53,8 +51,46 @@ class T9Trie {
     }
 
     val root = Node()
+    private var insertionOrders = IntArray(16) { -1 }
+    private var frequencies = IntArray(16)
+    private var hasFrequency = BooleanArray(16)
+    private var nextInsertionOrder = 0
 
-    fun insert(code: T9Code, wordIndex: WordIndex) {
+    private fun ensureRankCapacity(index: Int) {
+        require(index >= 0) { "Word index must not be negative" }
+        if (index < insertionOrders.size) return
+
+        var newSize = insertionOrders.size
+        while (newSize <= index) newSize *= 2
+        val oldSize = insertionOrders.size
+        insertionOrders = insertionOrders.copyOf(newSize).apply {
+            for (i in oldSize until newSize) this[i] = -1
+        }
+        frequencies = frequencies.copyOf(newSize)
+        hasFrequency = hasFrequency.copyOf(newSize)
+    }
+
+    private fun comesBefore(first: Int, second: Int): Boolean {
+        val firstHasFrequency = hasFrequency[first]
+        val secondHasFrequency = hasFrequency[second]
+        return when {
+            firstHasFrequency && secondHasFrequency && frequencies[first] != frequencies[second] ->
+                frequencies[first] > frequencies[second]
+            firstHasFrequency && !secondHasFrequency -> true
+            !firstHasFrequency && secondHasFrequency -> false
+            else -> insertionOrders[first] < insertionOrders[second]
+        }
+    }
+
+    fun insert(code: T9Code, wordIndex: WordIndex, frequency: Int? = null) {
+        ensureRankCapacity(wordIndex.id)
+        if (insertionOrders[wordIndex.id] == -1) {
+            insertionOrders[wordIndex.id] = nextInsertionOrder++
+            if (frequency != null) {
+                frequencies[wordIndex.id] = frequency
+                hasFrequency[wordIndex.id] = true
+            }
+        }
         val path = arrayOfNulls<Node>(TOP_DEPTH)
         var depth = 0
         var curr = root
@@ -72,12 +108,11 @@ class T9Trie {
             depth++
         }
         if (!curr.addIndex(wordIndex.id)) return
-        for (n in path) n?.offerTop(wordIndex.id)
+        for (n in path) n?.offerTop(wordIndex.id, ::comesBefore)
     }
 
     /**
-     * Önce önekle birebir biten kelimeler (ekleme sırasıyla), ardından daha uzun kodlu kelimeler
-     * (küçük indeks = daha sık kullanılan önce) döner.
+     * Önce tam kod eşleşmeleri, ardından alt ağaçtaki kelimeler öncelik sırasıyla döner.
      */
     fun search(codePrefix: String, maxResults: Int = TOP_K): IntArray {
         var curr = root
@@ -90,7 +125,9 @@ class T9Trie {
             depth++
         }
 
-        val own = curr.candidateIndices
+        val own = curr.candidateIndices.toList().sortedWith(
+            Comparator { a, b -> compareRank(a, b) }
+        )
         val result = IntArray(maxResults)
         var count = 0
         for (idx in own) {
@@ -116,11 +153,17 @@ class T9Trie {
             for (child in node.children) if (child != null) collect(child, false)
         }
         collect(curr, true)
-        rest.sort()
+        rest.sortWith(Comparator { a, b -> compareRank(a, b) })
         for (idx in rest) {
             if (count >= maxResults) break
             result[count++] = idx
         }
         return result.copyOf(count)
+    }
+
+    private fun compareRank(first: Int, second: Int): Int = when {
+        comesBefore(first, second) -> -1
+        comesBefore(second, first) -> 1
+        else -> 0
     }
 }

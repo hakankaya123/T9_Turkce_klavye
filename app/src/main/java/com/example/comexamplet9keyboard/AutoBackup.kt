@@ -19,24 +19,30 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * Kullanıcı sözlüğünün her gün 23:45'te "İndirilenler" klasörüne otomatik yedeklenmesi.
+ * Kullanıcı sözlüğünün her gün seçilen saatte (varsayılan 23:45) "İndirilenler" klasörüne otomatik yedeklenmesi.
  * Dosya adı sabittir; her yedek bir öncekinin ÜZERİNE yazılır (eski yedek silinip yerine yenisi geçer).
  *
  * Zamanlama AlarmManager ile yapılır (ek izin gerekmez). Android pil tasarrufu nedeniyle alarm
- * 23:45'ten birkaç dakika sonra çalışabilir. Cihaz o saatte kapalıysa, açılışta kaçırılan yedek alınır.
+ * 23:45'ten birkaç dakika sonra çalışabilir. Bazı üreticiler (Honor/Huawei/Xiaomi...) arka plan
+ * alarmlarını hiç çalıştırmaz; bu yüzden ikinci bir güvence vardır: klavye her açıldığında, son
+ * 23:45'ten beri yedek alınmamışsa yedek hemen alınır (bkz. [runIfMissed]). Cihaz kapalıysa açılışta da
+ * kaçırılan yedek alınır.
  */
 object AutoBackup {
     private const val TAG = "AutoBackup"
     const val FILE_NAME = "t9-sozluk-yedek.json"
     const val ACTION_RUN = "com.example.comexamplet9keyboard.AUTO_BACKUP"
-    private const val HOUR = 23
-    private const val MINUTE = 45
+    const val DEFAULT_HOUR = 23
+    const val DEFAULT_MINUTE = 45
+    private const val KEY_HOUR = "hour"
+    private const val KEY_MINUTE = "minute"
     private const val REQUEST_CODE = 2345
 
     private const val KEY_ENABLED = "enabled"
     private const val KEY_LAST_TRY = "last_try"
     private const val KEY_LAST_OK = "last_ok"
     private const val KEY_LAST_ERR = "last_err"
+    private const val KEY_LAST_SRC = "last_src"
 
     private fun prefs(ctx: Context) = ctx.getSharedPreferences("t9_auto", Context.MODE_PRIVATE)
 
@@ -55,7 +61,25 @@ object AutoBackup {
         val ok = p.getLong(KEY_LAST_OK, 0L)
         if (ok <= 0L) return null
         val f = SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.forLanguageTag("tr-TR"))
-        return "Son yedek: " + f.format(Date(ok))
+        val src = p.getString(KEY_LAST_SRC, null)
+        return "Son yedek: " + f.format(Date(ok)) + (if (src != null) " ($src)" else "")
+    }
+
+    // ── Yedek saati (kullanıcı seçer) ──
+
+    fun hour(ctx: Context) = prefs(ctx).getInt(KEY_HOUR, DEFAULT_HOUR)
+    fun minute(ctx: Context) = prefs(ctx).getInt(KEY_MINUTE, DEFAULT_MINUTE)
+
+    fun timeText(ctx: Context) = "%02d:%02d".format(hour(ctx), minute(ctx))
+
+    /** Yedek saatini değiştirir; açıksa alarmı yeni saate göre yeniden kurar. */
+    fun setTime(ctx: Context, hour: Int, minute: Int) {
+        prefs(ctx).edit {
+            putInt(KEY_HOUR, hour); putInt(KEY_MINUTE, minute)
+            // Saat değişimi, "kaçırılmış yedek" gibi görünüp hemen yedek aldırmasın.
+            putLong(KEY_LAST_TRY, System.currentTimeMillis())
+        }
+        if (isEnabled(ctx)) schedule(ctx)
     }
 
     // ── Zamanlama ──
@@ -66,22 +90,22 @@ object AutoBackup {
     private fun pending(ctx: Context, flags: Int): PendingIntent? =
         PendingIntent.getBroadcast(ctx, REQUEST_CODE, alarmIntent(ctx), flags or PendingIntent.FLAG_IMMUTABLE)
 
-    private fun at2345(now: Long): Calendar = Calendar.getInstance().apply {
+    private fun atTime(now: Long, hour: Int, minute: Int): Calendar = Calendar.getInstance().apply {
         timeInMillis = now
-        set(Calendar.HOUR_OF_DAY, HOUR); set(Calendar.MINUTE, MINUTE)
+        set(Calendar.HOUR_OF_DAY, hour); set(Calendar.MINUTE, minute)
         set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0)
     }
 
-    /** Şu andan sonraki ilk 23:45. */
-    internal fun nextTrigger(now: Long): Long {
-        val c = at2345(now)
+    /** Şu andan sonraki ilk yedek saati (varsayılan 23:45). */
+    internal fun nextTrigger(now: Long, hour: Int = DEFAULT_HOUR, minute: Int = DEFAULT_MINUTE): Long {
+        val c = atTime(now, hour, minute)
         if (c.timeInMillis <= now) c.add(Calendar.DAY_OF_MONTH, 1)
         return c.timeInMillis
     }
 
-    /** Şu andan önceki en son 23:45 (yani en son çalışması gereken yedek zamanı). */
-    internal fun lastDue(now: Long): Long {
-        val c = at2345(now)
+    /** Şu andan önceki en son yedek saati (yani en son çalışması gereken yedek zamanı). */
+    internal fun lastDue(now: Long, hour: Int = DEFAULT_HOUR, minute: Int = DEFAULT_MINUTE): Long {
+        val c = atTime(now, hour, minute)
         if (c.timeInMillis > now) c.add(Calendar.DAY_OF_MONTH, -1)
         return c.timeInMillis
     }
@@ -89,7 +113,11 @@ object AutoBackup {
     fun schedule(ctx: Context) {
         val am = ctx.getSystemService(Context.ALARM_SERVICE) as AlarmManager
         val pi = pending(ctx, PendingIntent.FLAG_UPDATE_CURRENT) ?: return
-        am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, nextTrigger(System.currentTimeMillis()), pi)
+        am.setAndAllowWhileIdle(
+            AlarmManager.RTC_WAKEUP,
+            nextTrigger(System.currentTimeMillis(), hour(ctx), minute(ctx)),
+            pi
+        )
     }
 
     private fun cancel(ctx: Context) {
@@ -97,24 +125,48 @@ object AutoBackup {
         pending(ctx, PendingIntent.FLAG_NO_CREATE)?.let { am.cancel(it); it.cancel() }
     }
 
-    /** Açıksa ve alarm kaybolmuşsa (ör. uygulama güncellemesi) yeniden kurar. */
+    /**
+     * Açıksa alarmı yeniden kurar. Aynı PendingIntent ile kurmak mevcut alarmın yerine geçer, zararsızdır.
+     * (PendingIntent kaydının varlığı alarmın hâlâ kurulu olduğunu göstermez; güncelleme/üretici temizliği
+     * alarmı silmiş olabilir.)
+     */
     fun ensureScheduled(ctx: Context) {
-        if (isEnabled(ctx) && pending(ctx, PendingIntent.FLAG_NO_CREATE) == null) schedule(ctx)
+        if (isEnabled(ctx)) schedule(ctx)
     }
 
-    /** Cihaz kapalıyken ya da alarm kaçtığında: son 23:45'ten beri hiç denenmediyse true. */
+    private val running = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /**
+     * Güvence: son yedek saatinden beri yedek denenmediyse (alarm çalışmadıysa) arka planda yedek alır.
+     * Klavye açıldığında çağrılır; ucuzdur (iki küçük ayar okuması).
+     */
+    fun runIfMissed(ctx: Context, source: String) {
+        if (!isEnabled(ctx) || !missedSinceLastRun(ctx)) return
+        if (!running.compareAndSet(false, true)) return
+        val app = ctx.applicationContext
+        Thread {
+            try {
+                runBackup(app, source)
+            } finally {
+                running.set(false)
+            }
+        }.start()
+    }
+
+    /** Cihaz kapalıyken ya da alarm kaçtığında: son yedek saatinden beri hiç denenmediyse true. */
     fun missedSinceLastRun(ctx: Context): Boolean =
-        prefs(ctx).getLong(KEY_LAST_TRY, 0L) < lastDue(System.currentTimeMillis())
+        prefs(ctx).getLong(KEY_LAST_TRY, 0L) < lastDue(System.currentTimeMillis(), hour(ctx), minute(ctx))
 
     // ── Yedek alma ──
 
     /** Yedeği yazar. Başarılıysa null, değilse hata mesajı döner. Arka plan iş parçacığında çağrılmalı. */
-    fun runBackup(ctx: Context): String? {
+    @Synchronized
+    fun runBackup(ctx: Context, source: String = "elle"): String? {
         val now = System.currentTimeMillis()
-        prefs(ctx).edit { putLong(KEY_LAST_TRY, now) }
+        prefs(ctx).edit { putLong(KEY_LAST_TRY, now); putString(KEY_LAST_SRC, source) }
         return try {
-            val t9 = ctx.getSharedPreferences("t9", Context.MODE_PRIVATE)
-            val empty = listOf("uc", "lc", "ub").all { (t9.getString(it, "") ?: "").isBlank() }
+            val data = UserDataStore.readRaw(ctx)
+            val empty = listOf(data.addedWords, data.learnedWords, data.wordPairs).all { it.isBlank() }
             if (empty) {
                 // Veri yokken (ör. silinmiş/sıfırlanmış) iyi bir yedeğin üzerine boş dosya yazma.
                 prefs(ctx).edit { putString(KEY_LAST_ERR, "Sözlük boş; mevcut yedek korundu") }

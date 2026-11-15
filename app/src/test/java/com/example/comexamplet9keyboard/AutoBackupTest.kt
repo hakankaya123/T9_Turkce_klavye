@@ -30,4 +30,14 @@ class AutoBackupTest {
         assertEquals(at(23, 45, 1), AutoBackup.nextTrigger(now))
         assertEquals(at(23, 45), AutoBackup.lastDue(now))
     }
+
+    @Test
+    fun customTimeIsRespected() {
+        val now = at(10, 0)
+        assertEquals(at(14, 30), AutoBackup.nextTrigger(now, 14, 30))
+        assertEquals(at(14, 30, -1), AutoBackup.lastDue(now, 14, 30))
+        val later = at(15, 0)
+        assertEquals(at(14, 30, 1), AutoBackup.nextTrigger(later, 14, 30))
+        assertEquals(at(14, 30), AutoBackup.lastDue(later, 14, 30))
+    }
 }

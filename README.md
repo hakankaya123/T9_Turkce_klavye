@@ -25,7 +25,7 @@
 
 1. Bu depoyu klonlayın:
    ```bash
-   git clone https://github.com/hakankaya123/T9_Turkce_klavye.git
+   git clone https://github.com/hakankaya123/com.example.t9keyboard.git
    ```
 2. Projeyi **Android Studio** ile açın.
 3. Gradle senkronizasyonu bitince cihazınızda veya emülatörde çalıştırın (**Run ▶**).
@@ -64,7 +64,7 @@ Her adımın yanında durum görünür (✓ Etkin / ✓ Seçildi).
 
 ## Otomatik Yedek
 
-Kullanıcı Sözlüğü ekranından açılır. Her gün 23:45'te sözlük `İndirilenler/t9-sozluk-yedek.json`
+Kullanıcı Sözlüğü ekranından açılır. Her gün seçtiğiniz saatte (varsayılan 23:45; satırdaki saate dokunarak değiştirilir) sözlük `İndirilenler/t9-sozluk-yedek.json`
 dosyasına yazılır ve önceki yedeğin üzerine geçer. Cihaz o saatte kapalıysa açılışta kaçırılan yedek
 alınır. `AutoBackup.kt` (zamanlama ve yazma) ve `AutoBackupReceiver.kt` (alarm/açılış olayları).
 
@@ -79,4 +79,4 @@ Hata bildirimi ve öneriler için **Issues** bölümünü kullanabilirsiniz. Pul
 
 ## Lisans
 
-Bu proje [MIT Lisansı](LICENSE) ile yayınlanmıştır.
+Henüz bir lisans eklenmedi. Eklemek isterseniz GitHub'da *Add file → Create new file → LICENSE* yolunu izleyip bir lisans şablonu seçebilirsiniz.

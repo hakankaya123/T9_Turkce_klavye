@@ -1,42 +1,27 @@
 package com.example.comexamplet9keyboard
 
 import android.content.Context
-import androidx.core.content.edit
 import java.util.Locale
 
 data class UserWord(val word: String, val count: Int)
 
 object UserDictionaryStore {
-    private const val PREF_KEY_UC = "uc"
     private val trLocale = Locale.forLanguageTag("tr-TR")
 
     fun load(context: Context): MutableList<UserWord> {
-        val prefs = context.getSharedPreferences("t9", Context.MODE_PRIVATE)
-        val uc = prefs.getString(PREF_KEY_UC, "") ?: ""
-        val list = mutableListOf<UserWord>()
-        uc.lines().forEach { line ->
-            val parts = line.split('\t')
-            if (parts.size == 2) {
-                val count = parts[1].toIntOrNull()
-                val word = parts[0].trim()
-                if ((count != null) && word.isNotEmpty()) {
-                    list.add(UserWord(word, count))
-                }
-            }
-        }
-        return list
+        return UserDataStore.parseCounts(UserDataStore.readAddedWords(context)).map { (word, count) ->
+            UserWord(word, count)
+        }.toMutableList()
     }
 
     fun save(context: Context, list: List<UserWord>) {
-        val prefs = context.getSharedPreferences("t9", Context.MODE_PRIVATE)
-        val sb = StringBuilder()
+        val counts = LinkedHashMap<String, Int>()
         list.forEach { (word, count) ->
             if (word.isNotBlank()) {
-                sb.append(word.trim()).append('\t').append(count).append('\n')
+                counts[word.trim()] = count
             }
         }
-        // putString("") boş listeyi de yazar; son kelime silindiğinde anahtar güncellenir.
-        prefs.edit { putString(PREF_KEY_UC, sb.toString()) }
+        UserDataStore.writeAddedWords(context, UserDataStore.serializeCounts(counts))
     }
 
     // Sistem sözlüğünden (best-effort) siler. WRITE_USER_DICTIONARY izni olmayan cihazlarda

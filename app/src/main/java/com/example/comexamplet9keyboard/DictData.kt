@@ -1,7 +1,6 @@
 package com.example.comexamplet9keyboard
 
 import android.content.Context
-import android.content.SharedPreferences
 import android.os.Handler
 import android.util.Log
 
@@ -12,18 +11,15 @@ import android.util.Log
  */
 class DictData(
     private val context: Context,
-    private val prefsProvider: () -> SharedPreferences,
     private val mainHandler: Handler
 ) {
-    // Servis nesnesi oluşurken Context henüz bağlı olmadığından SharedPreferences ilk kullanımda alınır.
-    private val prefs: SharedPreferences get() = prefsProvider()
-
     private companion object {
         const val TAG = "DictData"
     }
 
     val words = ArrayList<String>()
     val codes = ArrayList<String>()
+    val frequencies = ArrayList<Int?>()
     val wordSet = HashSet<String>()
     val builtinBigrams = HashMap<String, ArrayList<String>>()
     val userCount = HashMap<String, Int>()
@@ -38,17 +34,18 @@ class DictData(
     val t9Trie = T9Trie()
     var uc = ""
 
-    fun addWord(w: String) {
+    fun addWord(w: String, frequency: Int? = null) {
         if (w.isEmpty() || !w.all { T9Keymap.charToDigit.containsKey(it) }) return
         if (!wordSet.add(w)) return
         val index = words.size
         wordIdx[w] = index
         words.add(w)
+        frequencies.add(frequency)
 
         val codeStr = T9Keymap.codeOf(w)
         codes.add(codeStr)
 
-        t9Trie.insert(T9Code(codeStr), WordIndex(index))
+        t9Trie.insert(T9Code(codeStr), WordIndex(index), frequency)
 
         addSuffixes(w)
         addLetterStats(w)
@@ -79,7 +76,7 @@ class DictData(
                 val entries = binaryReader.readAllEntries()
                 if (entries.isNotEmpty()) {
                     // .bin dosyası frekansa göre azalan sıralıdır (T9KeymapTest bunu doğrular); yeniden sıralamaya gerek yok.
-                    entries.forEach { addWord(it.word) }
+                    entries.forEach { addWord(it.word, it.frequency) }
                     loaded = true
                 }
             }
@@ -108,33 +105,20 @@ class DictData(
 
     fun loadUser(migrate: Boolean) {
         try {
-            uc = prefs.getString("uc", "") ?: ""
-            uc.lines().forEach { l ->
-                val p = l.split('\t')
-                if (p.size == 2) {
-                    val c = p[1].toIntOrNull()
-                    if (c != null) {
-                        val builtin = migrate && wordSet.contains(p[0])
-                        userCount[p[0]] = c
-                        if (!builtin) {
-                            userWords.add(p[0]); addWord(p[0])
-                        }
-                    }
+            val data = UserDataStore.read(context)
+            uc = data.raw.addedWords
+            data.addedWordCounts.forEach { (word, count) ->
+                val builtin = migrate && wordSet.contains(word)
+                userCount[word] = count
+                if (!builtin) {
+                    userWords.add(word); addWord(word)
                 }
             }
-            (prefs.getString("lc", "") ?: "").lines().forEach { l ->
-                val p = l.split('\t')
-                if (p.size == 2) {
-                    val c = p[1].toIntOrNull()
-                    if (c != null && !userCount.containsKey(p[0])) userCount[p[0]] = c
-                }
+            data.learnedWordCounts.forEach { (word, count) ->
+                if (!userCount.containsKey(word)) userCount[word] = count
             }
-            (prefs.getString("ub", "") ?: "").lines().forEach { l ->
-                val p = l.split('\t')
-                if (p.size == 3) {
-                    val c = p[2].toIntOrNull()
-                    if (c != null) userBigram.getOrPut(p[0]) { HashMap() }[p[1]] = c
-                }
+            data.wordPairCounts.forEach { (previous, words) ->
+                userBigram[previous] = HashMap(words)
             }
         } catch (e: Exception) {
             Log.w(TAG, "Kullanıcı sözlüğü yüklenemedi", e)

@@ -58,54 +58,114 @@ class UserDictionaryActivity : AppCompatActivity() {
             if (uri != null) doImport(uri)
         }
 
-    // ── Otomatik yedek (her gün 23:45, İndirilenler) ──
+    // ── Otomatik yedek (her gün seçilen saatte, İndirilenler) ──
     private lateinit var autoText: TextView
+    private lateinit var autoSwitch: androidx.appcompat.widget.SwitchCompat
+    private var autoRefreshing = false
+
+    // Android 9 ve öncesinde depolama izni verilince yapılacak iş
+    private var permAction: (() -> Unit)? = null
 
     private val autoPermLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-            if (granted) enableAutoBackup()
-            else Toast.makeText(this, "İzin verilmedi; otomatik yedek açılamadı", Toast.LENGTH_LONG).show()
-        }
-
-    private fun enableAutoBackup() {
-        AutoBackup.setEnabled(this, true)
-        refreshAutoRow()
-        val app = applicationContext
-        Thread {
-            val err = AutoBackup.runBackup(app)
-            runOnUiThread {
-                refreshAutoRow()
-                val msg = if (err == null) "Otomatik yedek açıldı; ilk yedek İndirilenler'e kaydedildi"
-                else "Otomatik yedek açıldı ama ilk yedek alınamadı: $err"
-                Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
-            }
-        }.start()
-    }
-
-    private fun toggleAutoBackup() {
-        if (AutoBackup.isEnabled(this)) {
-            AutoBackup.setEnabled(this, false)
+            val action = permAction
+            permAction = null
+            if (granted) action?.invoke()
+            else Toast.makeText(this, "Depolama izni verilmedi", Toast.LENGTH_LONG).show()
             refreshAutoRow()
-            return
         }
+
+    // Android 9 ve öncesinde İndirilenler'e yazmak için izin gerekir; gerekirse ister, yoksa işi yapar.
+    private fun withStoragePermission(action: () -> Unit) {
         if (android.os.Build.VERSION.SDK_INT < 29 &&
             checkSelfPermission(android.Manifest.permission.WRITE_EXTERNAL_STORAGE) !=
             android.content.pm.PackageManager.PERMISSION_GRANTED
         ) {
+            permAction = action
             autoPermLauncher.launch(android.Manifest.permission.WRITE_EXTERNAL_STORAGE)
             return
         }
-        enableAutoBackup()
+        action()
+    }
+
+    private fun onAutoSwitchChanged(checked: Boolean) {
+        if (autoRefreshing) return
+        if (!checked) {
+            AutoBackup.setEnabled(this, false)
+            refreshAutoRow()
+            return
+        }
+        withStoragePermission {
+            AutoBackup.setEnabled(this, true)
+            refreshAutoRow()
+            Toast.makeText(
+                this,
+                "Otomatik yedek açıldı: her gün ${AutoBackup.timeText(this)}",
+                Toast.LENGTH_LONG
+            ).show()
+        }
+        // İzin istendiyse, verilene kadar anahtar eski konumunda görünsün
+        if (permAction != null) refreshAutoRow()
+    }
+
+    private fun backupNow() {
+        withStoragePermission {
+            val app = applicationContext
+            Thread {
+                val err = AutoBackup.runBackup(app, "elle")
+                runOnUiThread {
+                    refreshAutoRow()
+                    Toast.makeText(
+                        this,
+                        if (err == null) "Yedek İndirilenler'e kaydedildi" else "Yedek alınamadı: $err",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            }.start()
+        }
     }
 
     private fun refreshAutoRow() {
         if (!::autoText.isInitialized) return
         val on = AutoBackup.isEnabled(this)
         val status = AutoBackup.statusText(this)
-        autoText.text = (if (on) "✓ " else "○ ") + "Otomatik yedek: her gün 23:45\n" +
-                "İndirilenler/${AutoBackup.FILE_NAME} (eskisinin üzerine yazılır)" +
-                (if (status != null) "\n$status" else "")
+        val text = android.text.SpannableStringBuilder("Otomatik yedek: her gün ")
+        // Saat ayrı tıklanabilir: dokununca saat seçici açılır.
+        val start = text.length
+        text.append(AutoBackup.timeText(this))
+        text.setSpan(object : android.text.style.ClickableSpan() {
+            override fun onClick(widget: View) = pickBackupTime()
+            override fun updateDrawState(ds: android.text.TextPaint) {
+                ds.color = ACCENT
+                ds.isUnderlineText = true
+            }
+        }, start, text.length, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        text.append("\nİndirilenler/${AutoBackup.FILE_NAME} (eskisinin üzerine yazılır)")
+        if (status != null) text.append("\n").append(status)
+        autoText.text = text
         autoText.setTextColor(if (on) TXT else SUBTXT)
+        autoRefreshing = true
+        autoSwitch.isChecked = on
+        autoRefreshing = false
+    }
+
+    private fun pickBackupTime() {
+        android.app.TimePickerDialog(
+            this,
+            { _, h, m ->
+                AutoBackup.setTime(this, h, m)
+                refreshAutoRow()
+                val note = if (AutoBackup.isEnabled(this)) "" else " (otomatik yedek kapalı; açmak için anahtarı kullanın)"
+                Toast.makeText(
+                    this,
+                    "Yedek saati ${AutoBackup.timeText(this)} olarak ayarlandı$note",
+                    Toast.LENGTH_LONG
+                ).show()
+            },
+            AutoBackup.hour(this),
+            AutoBackup.minute(this),
+            true
+        ).show()
     }
 
     private fun doExport(uri: android.net.Uri) {
@@ -223,15 +283,41 @@ class UserDictionaryActivity : AppCompatActivity() {
 
         autoText = TextView(this).apply {
             textSize = 13f
+            // Saat kısmındaki bağlantıya (ClickableSpan) dokunmayı etkinleştirir
+            movementMethod = android.text.method.LinkMovementMethod.getInstance()
+            highlightColor = Color.TRANSPARENT
+        }
+        autoSwitch = androidx.appcompat.widget.SwitchCompat(this).apply {
+            val states = arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf())
+            thumbTintList = android.content.res.ColorStateList(states, intArrayOf(ACCENT, SUBTXT))
+            trackTintList = android.content.res.ColorStateList(states, intArrayOf(ACCENT_DARK, ITEM_BG))
+            setOnCheckedChangeListener { _, checked -> onAutoSwitchChanged(checked) }
+        }
+        val autoTop = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(autoText, LinearLayout.LayoutParams(0, -2, 1f))
+            addView(autoSwitch, LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(8) })
+        }
+        val backupNowBtn = TextView(this).apply {
+            text = "⟳  Şimdi yedekle"
+            textSize = 13f
+            setTextColor(ACCENT)
+            setPadding(0, dp(12), 0, dp(4))
+            setOnClickListener { backupNow() }
+        }
+        val autoCard = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
             background = GradientDrawable().apply {
                 setColor(CARD_BG)
                 cornerRadius = dp(10).toFloat()
             }
-            setPadding(dp(12), dp(10), dp(12), dp(10))
-            setOnClickListener { toggleAutoBackup() }
+            setPadding(dp(12), dp(10), dp(12), dp(6))
+            addView(autoTop)
+            addView(backupNowBtn)
         }
         container.addView(
-            autoText,
+            autoCard,
             LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(12) }
         )
         refreshAutoRow()

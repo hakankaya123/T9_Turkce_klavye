@@ -22,6 +22,7 @@ internal fun T9Service.candidates(s: String): List<String> {
         .sortedWith(
             compareBy<Int> { if (codes[it].length == s.length) 0 else 1 }
                 .thenByDescending { userCount[words[it]] ?: 0 }
+                .thenByDescending { dd.frequencies[it] ?: Int.MIN_VALUE }
                 .thenBy { codes[it].length }
                 .thenBy { it }
         )
@@ -107,7 +108,10 @@ internal fun T9Service.prefixCandidates(prefix: String): List<String> {
 
     return (builtInHits + userHits)
         .distinct()
-        .sortedByDescending { userCount[words[it]] ?: 0 }
+        .sortedWith(
+            compareByDescending<Int> { userCount[words[it]] ?: 0 }
+                .thenByDescending { dd.frequencies[it] ?: Int.MIN_VALUE }
+        )
         .take(6)
         .map { words[it] }
         .toList()
