@@ -5,4 +5,10 @@
     <color name="splash_bg">#141C22</color>
     <color name="neon_cyan">#7EEEEF</color>
     <color name="neon_red">#FF6B6B</color>
+    <color name="card_background">#1C2830</color>
+    <color name="accent">#7EEEEF</color>
+    <color name="accent_dark">#0E7C86</color>
+    <color name="main_text">#F8FAFC</color>
+    <color name="sub_text">#94A3B8</color>
+    <color name="done_background">#2A3A44</color>
 </resources>

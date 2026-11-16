@@ -34,6 +34,7 @@ class DictData(
     val t9Trie = T9Trie()
     var uc = ""
 
+    @Synchronized
     fun addWord(w: String, frequency: Int? = null) {
         if (w.isEmpty() || !w.all { T9Keymap.charToDigit.containsKey(it) }) return
         if (!wordSet.add(w)) return

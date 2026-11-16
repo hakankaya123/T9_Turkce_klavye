@@ -30,6 +30,7 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.isVisible
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
@@ -241,6 +242,10 @@ class T9Service : InputMethodService() {
     private var predView: TextView? = null
     private var shiftIcon: IconView? = null
     private val serviceScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
+    private var predictiveSearchJob: Job? = null
+    private var predictiveSearchGeneration = 0L
+    private var prefixSearchJob: Job? = null
+    private var prefixSearchGeneration = 0L
     private val confirmRunnable = Runnable { confirmPending(); updateSuggestions() }
     private val symRunnable = Runnable {
         currentInputConnection?.finishComposingText()
@@ -508,7 +513,8 @@ class T9Service : InputMethodService() {
         if (w.length < 2 || !w.all { charToDigit.containsKey(it) }) {
             prevWord = null; return
         }
-        if (!wordSet.contains(w)) {
+        val isKnownWord = synchronized(dd) { wordSet.contains(w) }
+        if (!isKnownWord) {
             if (autoAddWords) {
                 // Otomatik mod: hangi şekilde yazılmış olursa olsun sessizce ekle
                 addToDictionary(w, silent = true)
@@ -517,11 +523,15 @@ class T9Service : InputMethodService() {
                 markUnknown(w)
             }
         } else {
-            userCount[w] = (userCount[w] ?: 0) + 1
+            synchronized(dd) {
+                userCount[w] = (userCount[w] ?: 0) + 1
+            }
         }
-        prevWord?.let { p ->
-            val m = userBigram.getOrPut(p) { HashMap() }
-            m[w] = (m[w] ?: 0) + 1
+        synchronized(dd) {
+            prevWord?.let { p ->
+                val m = userBigram.getOrPut(p) { HashMap() }
+                m[w] = (m[w] ?: 0) + 1
+            }
         }
         prevWord = w
         learnedSinceSave++
@@ -529,15 +539,6 @@ class T9Service : InputMethodService() {
         handler.removeCallbacks(saveRunnable)
         handler.postDelayed(saveRunnable, 5000)
     }
-
-    internal fun matchesForced(w: String): Boolean {
-        for (k in forced.indices) {
-            val f = forced[k]
-            if (f != null && (k >= w.length || w[k] != f)) return false
-        }
-        return true
-    }
-
 
     // Yalnızca tahminli (T9) yazımda kullanılır: tüm kelime tek seferde gösterildiğinden shift ilk harfe uygulanır.
     private fun shown(s: String) = when {
@@ -678,9 +679,31 @@ class T9Service : InputMethodService() {
     }
 
     internal fun refreshPredictive(ic: InputConnection) {
-        cands = if (attach != null) fragmentCandidates() else candidates(seq.toString())
+        val query = seq.toString()
+        val dictionary = dd
+        val forcedSnapshot = forced.toList()
+        val generation = ++predictiveSearchGeneration
+        predictiveSearchJob?.cancel()
+        cands = if (attach != null) fragmentCandidates() else emptyList()
         ic.setComposingText(shown(predText()), 1)
         updateSuggestions()
+        if (attach != null) return
+
+        predictiveSearchJob = serviceScope.launch {
+            val matches = withContext(Dispatchers.Default) {
+                synchronized(dictionary) { candidates(dictionary, query, forcedSnapshot) }
+            }
+            if (
+                generation != predictiveSearchGeneration ||
+                query != seq.toString() ||
+                dictionary !== dd ||
+                ic !== currentInputConnection
+            ) return@launch
+
+            cands = matches
+            ic.setComposingText(shown(predText()), 1)
+            updateSuggestions()
+        }
     }
 
     private fun tapSymbolKey() {
@@ -706,6 +729,11 @@ class T9Service : InputMethodService() {
         finalizeWord: Boolean = false
     ) {
         val ic = currentInputConnection ?: return
+        if (seq.isNotEmpty() && chosen == null && cands.isEmpty()) {
+            predictiveSearchJob?.cancel()
+            predictiveSearchGeneration++
+            cands = candidates(dd, seq.toString(), forced.toList())
+        }
         lastTapId = null
         endDirect()
         checkCursorMoved()
@@ -1073,9 +1101,11 @@ class T9Service : InputMethodService() {
         syncUserDictionary()
         val w = w0.lowercase(tr)
         if (w.length < 2 || !w.all { charToDigit.containsKey(it) }) return
-        addWord(w)
-        userWords.add(w)
-        userCount[w] = (userCount[w] ?: 0) + 1
+        synchronized(dd) {
+            addWord(w)
+            userWords.add(w)
+            userCount[w] = (userCount[w] ?: 0) + 1
+        }
         if (UserDataStore.readAddedWords(this) != lastUc || rebuilding) {
             UserDictionaryStore.add(this, w)
             rebuildDictionary()
@@ -1109,6 +1139,8 @@ class T9Service : InputMethodService() {
     }
 
     internal fun updateSuggestions() {
+        val prefixGeneration = ++prefixSearchGeneration
+        prefixSearchJob?.cancel()
         if (composingActive() || attach != null) recentUnknownWord = null
         if (recentUnknownWord != null) {
             suggestions = emptyList()
@@ -1122,10 +1154,34 @@ class T9Service : InputMethodService() {
                 }
 
                 seq.isNotEmpty() -> cands
-                word.isNotEmpty() || pendKey != null ->
-                    if (attach != null) suffixCompletions(pendingText()) else prefixCandidates(
-                        pendingText()
-                    )
+                word.isNotEmpty() || pendKey != null -> {
+                    if (attach != null) {
+                        suffixCompletions(pendingText())
+                    } else {
+                        val prefix = pendingText()
+                        val dictionary = dd
+                        suggestions = emptyList()
+                        prefixSearchJob = serviceScope.launch {
+                            val matches = withContext(Dispatchers.Default) {
+                                synchronized(dictionary) { prefixCandidates(dictionary, prefix) }
+                            }
+                            if (
+                                prefixGeneration == prefixSearchGeneration &&
+                                dictionary === dd &&
+                                seq.isEmpty() &&
+                                attach == null &&
+                                (word.isNotEmpty() || pendKey != null) &&
+                                pendingText() == prefix &&
+                                recentUnknownWord == null
+                            ) {
+                                suggestions = matches
+                                chipWord = computeChip()
+                                renderSuggestions()
+                            }
+                        }
+                        emptyList()
+                    }
+                }
 
                 symComposing -> emptyList()
                 attach != null -> emptyList()

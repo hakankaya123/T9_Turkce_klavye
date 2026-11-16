@@ -3,33 +3,40 @@ package com.example.comexamplet9keyboard
 import kotlin.math.ln
 
 // Tahmin motoru: T9 aday arama, harf tahmini, ek ve sonraki kelime önerileri.
-// T9Service'in uzantı fonksiyonlarıdır; durum (state) T9Service içinde tutulur.
+// UI durumuna bağlı işlemler T9Service uzantısı, sözlük aramaları saf yardımcı olarak tutulur.
 
-internal fun T9Service.candidates(s: String): List<String> {
-    val matchedIndices = dd.t9Trie.search(s)
-    val userMatches = userCount.keys.asSequence()
+internal fun candidates(
+    dictionary: DictData,
+    s: String,
+    forced: List<Char?>
+): List<String> {
+    val matchedIndices = dictionary.t9Trie.search(s)
+    val userMatches = dictionary.userCount.keys.asSequence()
         .mapNotNull { w ->
-            wordIdx[w]?.takeIf { idx ->
-                codes[idx].startsWith(s) && matchesForced(
-                    w
-                )
+            dictionary.wordIdx[w]?.takeIf { idx ->
+                dictionary.codes[idx].startsWith(s) && matchesForced(w, forced)
             }
         }
 
     return (matchedIndices.asSequence() + userMatches)
-        .filter { matchesForced(words[it]) }
+        .filter { matchesForced(dictionary.words[it], forced) }
         .distinct()
         .sortedWith(
-            compareBy<Int> { if (codes[it].length == s.length) 0 else 1 }
-                .thenByDescending { userCount[words[it]] ?: 0 }
-                .thenByDescending { dd.frequencies[it] ?: Int.MIN_VALUE }
-                .thenBy { codes[it].length }
+            compareBy<Int> { if (dictionary.codes[it].length == s.length) 0 else 1 }
+                .thenByDescending { dictionary.userCount[dictionary.words[it]] ?: 0 }
+                .thenByDescending { dictionary.frequencies[it] ?: Int.MIN_VALUE }
+                .thenBy { dictionary.codes[it].length }
                 .thenBy { it }
         )
         .take(8)
-        .map { words[it] }
+        .map { dictionary.words[it] }
         .toList()
 }
+
+private fun matchesForced(word: String, forced: List<Char?>): Boolean =
+    forced.indices.all { index ->
+        forced[index] == null || (index < word.length && word[index] == forced[index])
+    }
 
 internal fun T9Service.letterScore(prev: Char, c: Char): Double {
     val b = (bigram[(prev.code shl 16) or c.code] ?: 0) + 0.5
@@ -98,22 +105,22 @@ internal fun T9Service.suffixCompletions(prefix: String): List<String> {
         .toList()
 }
 
-internal fun T9Service.prefixCandidates(prefix: String): List<String> {
-    val p = prefix.lowercase(tr)
-    val builtInHits = words.asSequence()
+internal fun prefixCandidates(dictionary: DictData, prefix: String): List<String> {
+    val p = prefix.lowercase(T9Keymap.tr)
+    val builtInHits = dictionary.words.asSequence()
         .mapIndexedNotNull { idx, word -> if (word.startsWith(p)) idx else null }
         .take(30)
-    val userHits = userCount.keys.asSequence()
-        .mapNotNull { w -> wordIdx[w]?.takeIf { w.startsWith(p) } }
+    val userHits = dictionary.userCount.keys.asSequence()
+        .mapNotNull { w -> dictionary.wordIdx[w]?.takeIf { w.startsWith(p) } }
 
     return (builtInHits + userHits)
         .distinct()
         .sortedWith(
-            compareByDescending<Int> { userCount[words[it]] ?: 0 }
-                .thenByDescending { dd.frequencies[it] ?: Int.MIN_VALUE }
+            compareByDescending<Int> { dictionary.userCount[dictionary.words[it]] ?: 0 }
+                .thenByDescending { dictionary.frequencies[it] ?: Int.MIN_VALUE }
         )
         .take(6)
-        .map { words[it] }
+        .map { dictionary.words[it] }
         .toList()
 }
 

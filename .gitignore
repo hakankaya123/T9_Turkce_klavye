@@ -19,3 +19,7 @@ local.properties
 *.apk
 *.aab
 
+# Release imza anahtarı ve yerel parolaları repoya ekleme
+/release-key.jks
+/keystore.properties
+

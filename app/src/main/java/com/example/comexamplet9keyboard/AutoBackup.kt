@@ -1,5 +1,6 @@
 package com.example.comexamplet9keyboard
 
+import android.annotation.SuppressLint
 import android.app.AlarmManager
 import android.app.PendingIntent
 import android.content.ContentUris
@@ -186,6 +187,7 @@ object AutoBackup {
 
     // Android 10+: İndirilenler'e MediaStore ile yazılır (izin gerekmez). Aynı adlı, bu uygulamanın
     // oluşturduğu dosya varsa içeriği doğrudan değiştirilir (üzerine yazılır).
+    @SuppressLint("NewApi")
     private fun writeMediaStore(ctx: Context, bytes: ByteArray) {
         val resolver = ctx.contentResolver
         val collection = MediaStore.Downloads.EXTERNAL_CONTENT_URI

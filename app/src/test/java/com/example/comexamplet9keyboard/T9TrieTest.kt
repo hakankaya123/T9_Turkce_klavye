@@ -97,4 +97,36 @@ class T9TrieTest {
         val r3 = t.search("2", maxResults = 5)
         assertArrayEquals(intArrayOf(1, 2, 3, 4, 5), r3)
     }
+
+    @Test
+    fun deepPrefixReturnsExactAndDescendantMatches() {
+        val t = T9Trie()
+        t.insert(T9Code("23456"), WordIndex(0), frequency = 1)
+        t.insert(T9Code("234567"), WordIndex(1), frequency = 30)
+        t.insert(T9Code("234568"), WordIndex(2), frequency = 20)
+
+        assertArrayEquals(intArrayOf(0, 1, 2), t.search("23456"))
+    }
+
+    @Test
+    fun deepPrefixHonorsResultLimit() {
+        val t = trie("234561" to 0, "234562" to 1, "234563" to 2)
+
+        assertArrayEquals(intArrayOf(0, 1), t.search("23456", maxResults = 2))
+    }
+
+    @Test
+    fun deepPrefixDoesNotReturnAnIndexTwice() {
+        val t = trie("23456" to 7, "234567" to 7, "234568" to 8)
+
+        assertArrayEquals(intArrayOf(7, 8), t.search("23456"))
+    }
+
+    @Test
+    fun nonPositiveResultLimitReturnsEmpty() {
+        val t = trie("22" to 1)
+
+        assertEquals(0, t.search("2", maxResults = 0).size)
+        assertEquals(0, t.search("2", maxResults = -1).size)
+    }
 }

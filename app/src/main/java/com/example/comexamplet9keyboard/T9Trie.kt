@@ -82,6 +82,7 @@ class T9Trie {
         }
     }
 
+    @Synchronized
     fun insert(code: T9Code, wordIndex: WordIndex, frequency: Int? = null) {
         ensureRankCapacity(wordIndex.id)
         if (insertionOrders[wordIndex.id] == -1) {
@@ -114,7 +115,10 @@ class T9Trie {
     /**
      * Önce tam kod eşleşmeleri, ardından alt ağaçtaki kelimeler öncelik sırasıyla döner.
      */
+    @Synchronized
     fun search(codePrefix: String, maxResults: Int = TOP_K): IntArray {
+        if (maxResults <= 0) return IntArray(0)
+
         var curr = root
         var depth = 0
         for (ch in codePrefix) {
@@ -129,7 +133,9 @@ class T9Trie {
             Comparator { a, b -> compareRank(a, b) }
         )
         val result = IntArray(maxResults)
+        val ownSet = own.toHashSet()
         var count = 0
+
         for (idx in own) {
             if (count >= maxResults) break
             result[count++] = idx
@@ -141,7 +147,7 @@ class T9Trie {
             for (i in 0 until curr.topCount) {
                 if (count >= maxResults) break
                 val idx = t[i]
-                if (!own.contains(idx)) result[count++] = idx
+                if (idx !in ownSet) result[count++] = idx
             }
             return result.copyOf(count)
         }
@@ -156,7 +162,7 @@ class T9Trie {
         rest.sortWith(Comparator { a, b -> compareRank(a, b) })
         for (idx in rest) {
             if (count >= maxResults) break
-            result[count++] = idx
+            if (idx !in ownSet) result[count++] = idx
         }
         return result.copyOf(count)
     }
