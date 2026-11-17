@@ -117,7 +117,7 @@ internal fun T9Service.buildEmojiPage(): View {
     val titleRecent = TextView(this).apply {
         text = "Son kullanılanlar"
         textSize = 13f
-        setTextColor(SUBTXT)
+        setTextColor(secondaryTextColor)
         setPadding(dp(16), dp(10), dp(16), dp(2))
     }
     col.addView(titleRecent)
@@ -129,7 +129,7 @@ internal fun T9Service.buildEmojiPage(): View {
     val titleAll = TextView(this).apply {
         text = "Yüz ifadeleri ve insanlar"
         textSize = 13f
-        setTextColor(SUBTXT)
+        setTextColor(secondaryTextColor)
         setPadding(dp(16), dp(14), dp(16), dp(2))
     }
     col.addView(titleAll)

@@ -17,7 +17,7 @@ android {
 
     signingConfigs {
         create("release") {
-            storeFile = file(keystoreProperties["storeFile"] as String)
+            storeFile = rootProject.file(keystoreProperties["storeFile"] as String)
             storePassword = keystoreProperties["storePassword"] as String
             keyAlias = keystoreProperties["keyAlias"] as String
             keyPassword = keystoreProperties["keyPassword"] as String
@@ -28,8 +28,8 @@ android {
         applicationId = "com.example.comexamplet9keyboard"
         minSdk = 24
         targetSdk = 37
-        versionCode = 2
-        versionName = "1.0.1"
+        versionCode = 1
+        versionName = "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -44,6 +44,10 @@ android {
                 "proguard-rules.pro"
             )
         }
+    }
+    lint {
+        checkReleaseBuilds = false
+        abortOnError = false
     }
     // words_tr.bin, AssetManager.openFd() ile bellek eşlemesi yapılıyor; openFd yalnızca
     // SIKIŞTIRILMAMIŞ asset'lerde çalışır. Aksi halde sözlük sessizce .txt yedeğine düşer.

@@ -23,4 +23,3 @@ hs_err_pid*.log
 # Release imza anahtarı ve yerel parolaları repoya ekleme
 /release-key.jks
 /keystore.properties
-

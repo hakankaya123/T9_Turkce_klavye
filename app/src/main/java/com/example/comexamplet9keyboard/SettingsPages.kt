@@ -48,7 +48,7 @@ internal fun T9Service.buildSettingsPage(): View {
             val iconView: View = if (iconKind != null) {
                 FrameLayout(context).apply {
                     addView(
-                        IconView(context, iconKind, TXT, dp(2).toFloat()),
+                        IconView(context, iconKind, textColor, dp(2).toFloat()),
                         FrameLayout.LayoutParams(dp(36), dp(36), Gravity.CENTER)
                     )
                 }
@@ -57,14 +57,14 @@ internal fun T9Service.buildSettingsPage(): View {
                     text = iconText ?: ""
                     textSize = 28f
                     gravity = Gravity.CENTER
-                    setTextColor(TXT)
+                    setTextColor(textColor)
                 }
             }
             val label = TextView(context).apply {
                 text = titleText
                 textSize = 12f
                 gravity = Gravity.CENTER
-                setTextColor(ICON)
+                setTextColor(iconColor)
                 setPadding(0, dp(6), 0, 0)
             }
             onLabelCreated?.invoke(label)
@@ -87,11 +87,11 @@ internal fun T9Service.buildSettingsPage(): View {
         {
             voiceInputEnabled = !voiceInputEnabled
             sesLabel?.text = if (voiceInputEnabled) "Sesle Yazma AÇIK" else "Sesle Yazma KAPALI"
-            sesLabel?.setTextColor(if (voiceInputEnabled) ACCENT else ICON)
+            sesLabel?.setTextColor(if (voiceInputEnabled) accentColor else iconColor)
         },
         onLabelCreated = { lbl ->
             sesLabel = lbl
-            lbl.setTextColor(if (voiceInputEnabled) ACCENT else ICON)
+            lbl.setTextColor(if (voiceInputEnabled) accentColor else iconColor)
         })
     val tBoyut = makeTile("⤢", null, "Yeniden Boyutlandır", { showResizeOverlay() })
     val tSozluk = makeTile("📖", null, "Sözlüğüm", { openUserDictionaryActivity() })
@@ -108,12 +108,12 @@ internal fun T9Service.buildSettingsPage(): View {
         predictive = !predictive
         updatePredLook()
         predLabel?.text = if (predictive) "Tahmin AÇIK" else "Tahmin KAPALI"
-        predLabel?.setTextColor(if (predictive) ACCENT else ICON)
+        predLabel?.setTextColor(if (predictive) accentColor else iconColor)
         val ic = currentInputConnection
         if (seq.isNotEmpty() && ic != null && attach == null) refreshPredictive(ic) else updateSuggestions()
     }, onLabelCreated = { lbl ->
         predLabel = lbl
-        lbl.setTextColor(if (predictive) ACCENT else ICON)
+        lbl.setTextColor(if (predictive) accentColor else iconColor)
     })
     val tDil = makeTile("🌐", null, "Dil", {
         (getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager).showInputMethodPicker()
@@ -125,11 +125,11 @@ internal fun T9Service.buildSettingsPage(): View {
         autoAddWords = !autoAddWords
         if (autoAddWords) recentUnknownWord = null
         kelimeLabel?.text = kelimeText()
-        kelimeLabel?.setTextColor(if (autoAddWords) ACCENT else ICON)
+        kelimeLabel?.setTextColor(if (autoAddWords) accentColor else iconColor)
         updateSuggestions()
     }, onLabelCreated = { lbl ->
         kelimeLabel = lbl
-        lbl.setTextColor(if (autoAddWords) ACCENT else ICON)
+        lbl.setTextColor(if (autoAddWords) accentColor else iconColor)
     })
     listOf(tTahmin, tDil, tPano, tAyarlar).forEach {
         row2.addView(it, LinearLayout.LayoutParams(0, -2, 1f))
@@ -150,25 +150,25 @@ internal fun T9Service.openUserDictionaryActivity() {
 
 internal fun T9Service.applyTheme() {
     if (lightTheme) {
-        BG = "#E4E7EB".toColorInt()
-        KEY = "#FFFFFF".toColorInt()
-        DIM = "#D3D8DD".toColorInt()
-        ACCENT = "#00897B".toColorInt()
-        TXT = "#202124".toColorInt()
-        SUBTXT = Color.parseColor("#6F757A")
-        ICON = Color.parseColor("#5F6368")
-        SELBG = Color.parseColor("#B2DFDB")
-        SHIFTOFF = Color.parseColor("#5FA79D")
+        backgroundColor = "#E4E7EB".toColorInt()
+        keyColor = "#FFFFFF".toColorInt()
+        dimColor = "#D3D8DD".toColorInt()
+        accentColor = "#00897B".toColorInt()
+        textColor = "#202124".toColorInt()
+        secondaryTextColor = Color.parseColor("#6F757A")
+        iconColor = Color.parseColor("#5F6368")
+        selectionBackgroundColor = Color.parseColor("#B2DFDB")
+        shiftOffColor = Color.parseColor("#5FA79D")
     } else {
-        BG = Color.parseColor("#212121")
-        KEY = Color.parseColor("#2E3236")
-        DIM = Color.parseColor("#262829")
-        ACCENT = Color.parseColor("#5FD3C5")
-        TXT = Color.WHITE
-        SUBTXT = Color.parseColor("#8A8E92")
-        ICON = Color.LTGRAY
-        SELBG = Color.parseColor("#3F6B66")
-        SHIFTOFF = Color.parseColor("#7FA8A3")
+        backgroundColor = Color.parseColor("#212121")
+        keyColor = Color.parseColor("#2E3236")
+        dimColor = Color.parseColor("#262829")
+        accentColor = Color.parseColor("#5FD3C5")
+        textColor = Color.WHITE
+        secondaryTextColor = Color.parseColor("#8A8E92")
+        iconColor = Color.LTGRAY
+        selectionBackgroundColor = Color.parseColor("#3F6B66")
+        shiftOffColor = Color.parseColor("#7FA8A3")
     }
 }
 
@@ -217,7 +217,7 @@ internal fun T9Service.buildThemePage(): View {
             background = GradientDrawable().apply {
                 setColor(Color.TRANSPARENT)
                 cornerRadius = dp(10).toFloat()
-                if (selected) setStroke(dp(2), ACCENT)
+                if (selected) setStroke(dp(2), accentColor)
             }
             setOnClickListener { setLightTheme(light) }
         }
@@ -250,7 +250,7 @@ internal fun T9Service.buildThemePage(): View {
             text = if (selected) "✓ $name" else name
             textSize = 15f
             gravity = Gravity.CENTER
-            setTextColor(if (selected) ACCENT else TXT)
+            setTextColor(if (selected) accentColor else textColor)
             setPadding(0, dp(8), 0, 0)
         })
         return box
