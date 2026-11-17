@@ -1835,7 +1835,8 @@ class T9Service : InputMethodService() {
 
     private fun numBackspace() {
         endDirect()
-        if ((currentInputEditorInfo?.inputType ?: 0) == 0) {
+        val inputType = currentInputEditorInfo?.inputType ?: 0
+        if (inputType == 0 || isNumericField(currentInputEditorInfo)) {
             sendDownUpKeyEvents(KeyEvent.KEYCODE_DEL)
         } else {
             backspace()
