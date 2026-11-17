@@ -177,7 +177,7 @@ internal fun T9Service.buildClipPage(): View {
     val header = TextView(this).apply {
         text = "+   YENİ OLUŞTUR"
         textSize = 17f
-        setTextColor(TXT)
+        setTextColor(textColor)
         gravity = Gravity.CENTER_VERTICAL
         setPadding(dp(18), 0, dp(16), 0)
         setOnClickListener { openClipEditor(null, false) }

@@ -41,15 +41,15 @@ class T9Service : InputMethodService() {
     internal val tr = T9Keymap.tr
     internal val handler = Handler(Looper.getMainLooper())
 
-    internal var BG = "#212121".toColorInt()
-    internal var KEY = "#2E3236".toColorInt()
-    internal var ACCENT = "#5FD3C5".toColorInt()
-    internal var DIM = "#262829".toColorInt()
-    internal var TXT = Color.WHITE
-    internal var SUBTXT = "#8A8E92".toColorInt()
-    internal var ICON = Color.LTGRAY
-    internal var SELBG = "#3F6B66".toColorInt()
-    internal var SHIFTOFF = "#7FA8A3".toColorInt()
+    internal var backgroundColor = "#212121".toColorInt()
+    internal var keyColor = "#2E3236".toColorInt()
+    internal var accentColor = "#5FD3C5".toColorInt()
+    internal var dimColor = "#262829".toColorInt()
+    internal var textColor = Color.WHITE
+    internal var secondaryTextColor = "#8A8E92".toColorInt()
+    internal var iconColor = Color.LTGRAY
+    internal var selectionBackgroundColor = "#3F6B66".toColorInt()
+    internal var shiftOffColor = "#7FA8A3".toColorInt()
     internal var lightTheme = false
     internal lateinit var themePage: View
     private lateinit var numPage: View
@@ -60,27 +60,24 @@ class T9Service : InputMethodService() {
 
     private fun codeOf(w: String) = T9Keymap.codeOf(w)
 
-    internal val words: ArrayList<String> get() = dd.words
-    internal val codes: ArrayList<String> get() = dd.codes
-    private val wordSet: HashSet<String> get() = dd.wordSet
-    internal val builtinBigrams: HashMap<String, ArrayList<String>> get() = dd.builtinBigrams
-    internal val userCount: HashMap<String, Int> get() = dd.userCount
-    internal val suffixCount: HashMap<String, Int> get() = dd.suffixCount
-    internal val wordIdx: HashMap<String, Int> get() = dd.wordIdx
-    internal val bigram: HashMap<Int, Int> get() = dd.bigram
-    internal val charTotal: HashMap<Char, Int> get() = dd.charTotal
-    internal val userBigram: HashMap<String, HashMap<String, Int>> get() = dd.userBigram
-    private val userWords: HashSet<String> get() = dd.userWords
+    internal val words: ArrayList<String> get() = dictionaryManager.data.words
+    internal val codes: ArrayList<String> get() = dictionaryManager.data.codes
+    private val wordSet: HashSet<String> get() = dictionaryManager.data.wordSet
+    internal val builtinBigrams: HashMap<String, ArrayList<String>>
+        get() = dictionaryManager.data.builtinBigrams
+    internal val userCount: HashMap<String, Int> get() = dictionaryManager.data.userCount
+    internal val suffixCount: HashMap<String, Int> get() = dictionaryManager.data.suffixCount
+    internal val wordIdx: HashMap<String, Int> get() = dictionaryManager.data.wordIdx
+    internal val bigram: HashMap<Int, Int> get() = dictionaryManager.data.bigram
+    internal val charTotal: HashMap<Char, Int> get() = dictionaryManager.data.charTotal
+    internal val userBigram: HashMap<String, HashMap<String, Int>>
+        get() = dictionaryManager.data.userBigram
+    private val userWords: HashSet<String> get() = dictionaryManager.data.userWords
     internal val suffixIndex: Map<String, Int> by lazy {
         KeyboardData.SUFFIXES.withIndex().associate { it.value to it.index }
     }
-    private var learnedSinceSave = 0
-    private var lastUc = ""
-    // İçe aktarma (UserDataBackup) bu sayacı değiştirir; uc aynı kalsa bile lc/ub yeniden yüklensin.
-    private var lastRev = 0L
-    private fun prefRev() = prefs.getLong("dict_rev", 0L)
     internal val prefs by lazy { getSharedPreferences("t9", MODE_PRIVATE) }
-    internal var dd = DictData(this, handler)
+    private lateinit var dictionaryManager: T9DictionaryManager
     internal var voiceInputEnabled: Boolean
         get() = prefs.getBoolean("voice_input_enabled", true)
         set(v) = prefs.edit { putBoolean("voice_input_enabled", v) }
@@ -277,36 +274,25 @@ class T9Service : InputMethodService() {
 
     override fun onCreate() {
         super.onCreate()
+        dictionaryManager = T9DictionaryManager(applicationContext, handler) { updateSuggestions() }
         AutoBackup.ensureScheduled(this)
         forcedPkgs = prefs.getStringSet("force_pred_pkgs", null)?.toSet() ?: emptySet()
         lightTheme = prefs.getBoolean("theme_light", false)
         applyTheme()
-
-        // Sözlük, arka planda ayrı bir nesneye yüklenir ve bitince ana iş parçacığında devreye alınır;
-        // böylece yükleme sürerken ana iş parçacığı yarım dolu koleksiyonları okumaz.
-        serviceScope.launch(Dispatchers.IO) {
-            val nd = DictData(this@T9Service, handler)
-            nd.loadBase()
-            val migrate = !prefs.getBoolean("uc_v2", false)
-            nd.loadUser(migrate)
-            withContext(Dispatchers.Main) {
-                dd = nd
-                lastUc = nd.uc
-                lastRev = prefRev()
-                if (migrate) {
-                    prefs.edit { putBoolean("uc_v2", true) }
-                    saveUserData()
-                }
-                updateSuggestions()
-            }
-        }
+        dictionaryManager.loadInitial()
 
         clipManager.start()
     }
 
+    override fun onUnbind(intent: Intent?): Boolean {
+        dictionaryManager.onUnbind()
+        handler.removeCallbacksAndMessages(null)
+        return super.onUnbind(intent)
+    }
+
     override fun onDestroy() {
-        handler.removeCallbacks(saveRunnable)
-        saveUserData()
+        dictionaryManager.onDestroy()
+        handler.removeCallbacksAndMessages(null)
         clipManager.stop()
         serviceScope.cancel()
         super.onDestroy()
@@ -314,7 +300,7 @@ class T9Service : InputMethodService() {
 
     override fun onStartInputView(info: EditorInfo?, restarting: Boolean) {
         super.onStartInputView(info, restarting)
-        syncUserDictionary()
+        dictionaryManager.syncUserDictionary()
         forcedHere = info?.packageName?.let { it in forcedPkgs } == true
         // Alarm çalışmadıysa (bazı üreticiler arka plan alarmlarını engeller) yedeği klavye açılırken al.
         AutoBackup.runIfMissed(applicationContext, "klavye")
@@ -376,7 +362,7 @@ class T9Service : InputMethodService() {
         stashedChip = recentUnknownWord
         stashedChipTime = SystemClock.uptimeMillis()
         commitWord(false)
-        saveUserData()
+        dictionaryManager.onFinishInput()
         super.onFinishInput()
     }
 
@@ -418,80 +404,7 @@ class T9Service : InputMethodService() {
         updateSuggestions()
     }
 
-    private fun addWord(w: String) = dd.addWord(w)
-
-    internal fun saveUserData() {
-        if (UserDataStore.readAddedWords(this) != lastUc || prefRev() != lastRev) {
-            rebuildDictionary(); return
-        }
-        if (rebuilding) return
-        learnedSinceSave = 0
-        handler.removeCallbacks(saveRunnable)
-        // Haritalar ana iş parçacığında değiştiği için metin de burada üretilir (başka iş parçacığında
-        // dolaşmak ConcurrentModificationException'a yol açabiliyordu). Diske yazma zaten apply() ile asenkron.
-        pruneUserBigram()
-        val addedWords = linkedMapOf<String, Int>()
-        val learnedWords = linkedMapOf<String, Int>()
-        userCount.forEach { (w, c) ->
-            if (userWords.contains(w)) addedWords[w] = c
-            else learnedWords[w] = c
-        }
-        lastUc = UserDataStore.save(this, addedWords, learnedWords, userBigram).addedWords
-    }
-
-    // Kelime çiftleri sınırsız büyürse her kayıtta devasa bir metin yeniden yazılırdı; üst sınırı koru.
-    private fun pruneUserBigram() {
-        var total = 0
-        userBigram.values.forEach { total += it.size }
-        var threshold = 1
-        while (total > MAX_USER_PAIRS && threshold < 50) {
-            val outer = userBigram.entries.iterator()
-            while (outer.hasNext()) {
-                val e = outer.next()
-                val inner = e.value.entries.iterator()
-                while (inner.hasNext()) {
-                    if (inner.next().value <= threshold) {
-                        inner.remove(); total--
-                    }
-                }
-                if (e.value.isEmpty()) outer.remove()
-            }
-            threshold++
-        }
-    }
-
-    private val saveRunnable = Runnable { saveUserData() }
-    private var rebuilding = false
-    private fun rebuildDictionary() {
-        if (rebuilding) return
-        rebuilding = true
-        val revAtStart = prefRev()
-        serviceScope.launch(Dispatchers.IO) {
-            val nd = DictData(this@T9Service, handler)
-            try {
-                nd.loadBase(); nd.loadUser(false)
-            } catch (e: Exception) {
-                Log.w(TAG, "Sözlük yeniden oluşturulamadı", e)
-            }
-            withContext(Dispatchers.Main) {
-                rebuilding = false
-                val cur = UserDataStore.readAddedWords(this@T9Service)
-                if (cur != nd.uc || prefRev() != revAtStart) {
-                    rebuildDictionary()
-                } else {
-                    dd = nd
-                    lastUc = nd.uc
-                    lastRev = revAtStart
-                    updateSuggestions()
-                }
-            }
-        }
-    }
-
-    private fun syncUserDictionary() {
-        val cur = UserDataStore.readAddedWords(this)
-        if (cur != lastUc || prefRev() != lastRev) rebuildDictionary()
-    }
+    internal fun saveUserData() = dictionaryManager.saveUserData()
 
     private fun gluedToLetter(composingLen: Int): Boolean {
         if (composingLen <= 0) return false
@@ -505,39 +418,15 @@ class T9Service : InputMethodService() {
 
     private fun composingGlued(): Boolean = gluedToLetter(composingString()?.length ?: 0)
 
-    private fun learn(w0: String) {
-        if (passwordLikeField()) {
-            prevWord = null; return
-        }
-        val w = w0.lowercase(tr)
-        if (w.length < 2 || !w.all { charToDigit.containsKey(it) }) {
-            prevWord = null; return
-        }
-        val isKnownWord = synchronized(dd) { wordSet.contains(w) }
-        if (!isKnownWord) {
-            if (autoAddWords) {
-                // Otomatik mod: hangi şekilde yazılmış olursa olsun sessizce ekle
-                addToDictionary(w, silent = true)
-            } else {
-                // Manuel mod: chip (⊕) göster, kullanıcı tıklayınca eklesin
-                markUnknown(w)
-            }
-        } else {
-            synchronized(dd) {
-                userCount[w] = (userCount[w] ?: 0) + 1
-            }
-        }
-        synchronized(dd) {
-            prevWord?.let { p ->
-                val m = userBigram.getOrPut(p) { HashMap() }
-                m[w] = (m[w] ?: 0) + 1
-            }
-        }
-        prevWord = w
-        learnedSinceSave++
-        // Her 5 kelimede değil, yazma durduktan 5 sn sonra kaydet (ayrıca onFinishInput'ta kaydedilir).
-        handler.removeCallbacks(saveRunnable)
-        handler.postDelayed(saveRunnable, 5000)
+    private fun learnWord(w: String) {
+        prevWord = dictionaryManager.learn(
+            word = w,
+            previousWord = prevWord,
+            passwordLikeField = passwordLikeField(),
+            autoAddWords = autoAddWords,
+            addUnknownWord = { addToDictionary(it, silent = true) },
+            markUnknownWord = ::markUnknown
+        )
     }
 
     // Yalnızca tahminli (T9) yazımda kullanılır: tüm kelime tek seferde gösterildiğinden shift ilk harfe uygulanır.
@@ -680,7 +569,7 @@ class T9Service : InputMethodService() {
 
     internal fun refreshPredictive(ic: InputConnection) {
         val query = seq.toString()
-        val dictionary = dd
+        val dictionary = dictionaryManager.data
         val forcedSnapshot = forced.toList()
         val generation = ++predictiveSearchGeneration
         predictiveSearchJob?.cancel()
@@ -696,7 +585,7 @@ class T9Service : InputMethodService() {
             if (
                 generation != predictiveSearchGeneration ||
                 query != seq.toString() ||
-                dictionary !== dd ||
+                dictionary !== dictionaryManager.data ||
                 ic !== currentInputConnection
             ) return@launch
 
@@ -732,7 +621,7 @@ class T9Service : InputMethodService() {
         if (seq.isNotEmpty() && chosen == null && cands.isEmpty()) {
             predictiveSearchJob?.cancel()
             predictiveSearchGeneration++
-            cands = candidates(dd, seq.toString(), forced.toList())
+            cands = candidates(dictionaryManager.data, seq.toString(), forced.toList())
         }
         lastTapId = null
         endDirect()
@@ -764,7 +653,7 @@ class T9Service : InputMethodService() {
             }
             ic.commitText(out + (if (space) " " else ""), 1)
             committedFull = (before ?: "") + out
-            if (learnIt) learn((before ?: "") + text)
+            if (learnIt) learnWord((before ?: "") + text)
             if (!space && chosen != null) newAttach = (before ?: "") + out
         } else {
             ic.finishComposingText()
@@ -773,7 +662,7 @@ class T9Service : InputMethodService() {
         val fullWord = committedFull
         recentUnknownWord = null
         if (autoAddWords) {
-            // Otomatik mod: commit sonrası da kontrol et (learn() çağrılmadığı durumlar için)
+            // Otomatik mod: commit sonrası da kontrol et (learnWord() çağrılmadığı durumlar için)
             if (fullWord != null) autoAddIfNew(fullWord)
             if (space) detectUnknownWord()?.let { autoAddIfNew(it) }
         } else {
@@ -935,10 +824,7 @@ class T9Service : InputMethodService() {
         // Not: TYPE_TEXT_FLAG_NO_SUGGESTIONS bilerek denetlenmez. Bu bayrak yalnızca öneri/düzeltme
         // istemediğini söyler; sohbet uygulamaları (ör. Gemini) kullanır ama noktalamadan sonra boşluk beklenir.
         val recent = ic.getTextBeforeCursor(40, 0)?.toString() ?: ""
-        if (recent.contains("@") || recent.contains("www.") || recent.contains(".com") || recent.contains(
-                ".net"
-            ) || recent.contains(".org")
-        ) return false
+        if (currentTokenContainsAddressMarker(recent)) return false
 
         if (s == "." || s == "," || s == ":") {
             val b = ic.getTextBeforeCursor(2, 0)?.toString() ?: ""
@@ -1024,7 +910,7 @@ class T9Service : InputMethodService() {
                 action != EditorInfo.IME_ACTION_UNSPECIFIED
         val customLabel = !ei?.actionLabel.isNullOrEmpty()
         if (!noEnterAction && !multiLine && (hasAction || customLabel)) {
-            val id = if (customLabel) ei!!.actionId else action
+            val id = if (customLabel) ei.actionId else action
             if (!ic.performEditorAction(id)) sendEnterKey(ic)
         } else {
             sendEnterKey(ic)
@@ -1047,7 +933,7 @@ class T9Service : InputMethodService() {
     private fun enterKey(): View {
         val k = key("", accent = true, onLong = { editorAction() }) { enter() }
         k.addView(
-            IconView(this, IconView.ENTER, ACCENT, dp(3).toFloat()),
+            IconView(this, IconView.ENTER, accentColor, dp(3).toFloat()),
             FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT)
         )
         return k
@@ -1058,7 +944,7 @@ class T9Service : InputMethodService() {
             commitWord(false, s)
         } else {
             currentInputConnection?.commitText(s, 1)
-            learn(s)
+            learnWord(s)
         }
         seq.setLength(0)
         word.setLength(0)
@@ -1098,18 +984,19 @@ class T9Service : InputMethodService() {
     }
 
     private fun addToDictionary(w0: String, silent: Boolean = false) {
-        syncUserDictionary()
+        dictionaryManager.syncUserDictionary()
         val w = w0.lowercase(tr)
         if (w.length < 2 || !w.all { charToDigit.containsKey(it) }) return
-        synchronized(dd) {
-            addWord(w)
-            userWords.add(w)
-            userCount[w] = (userCount[w] ?: 0) + 1
+        synchronized(dictionaryManager.data) {
+            dictionaryManager.addWord(w)
+            dictionaryManager.data.userWords.add(w)
+            dictionaryManager.data.userCount[w] =
+                (dictionaryManager.data.userCount[w] ?: 0) + 1
         }
-        if (UserDataStore.readAddedWords(this) != lastUc || rebuilding) {
+        if (dictionaryManager.addedWordsChangedOrRebuilding()) {
             UserDictionaryStore.add(this, w)
-            rebuildDictionary()
-        } else saveUserData()
+            dictionaryManager.rebuildDictionary()
+        } else dictionaryManager.saveUserData()
         try {
             android.provider.UserDictionary.Words.addWord(this, w, 250, null, null)
         } catch (e: Exception) {
@@ -1159,7 +1046,7 @@ class T9Service : InputMethodService() {
                         suffixCompletions(pendingText())
                     } else {
                         val prefix = pendingText()
-                        val dictionary = dd
+                        val dictionary = dictionaryManager.data
                         suggestions = emptyList()
                         prefixSearchJob = serviceScope.launch {
                             val matches = withContext(Dispatchers.Default) {
@@ -1167,7 +1054,7 @@ class T9Service : InputMethodService() {
                             }
                             if (
                                 prefixGeneration == prefixSearchGeneration &&
-                                dictionary === dd &&
+                                dictionary === dictionaryManager.data &&
                                 seq.isEmpty() &&
                                 attach == null &&
                                 (word.isNotEmpty() || pendKey != null) &&
@@ -1220,9 +1107,9 @@ class T9Service : InputMethodService() {
                 setPadding(dp(14), 0, dp(14), 0)
                 setOnClickListener { addToDictionary(chip) }
             }
-            c.addView(TextView(this).apply { text = "⊕"; textSize = 28f; setTextColor(ACCENT) })
+            c.addView(TextView(this).apply { text = "⊕"; textSize = 28f; setTextColor(accentColor) })
             c.addView(TextView(this).apply {
-                text = chip; textSize = 19f; setTextColor(TXT); setPadding(dp(8), 0, 0, 0)
+                text = chip; textSize = 19f; setTextColor(textColor); setPadding(dp(8), 0, 0, 0)
             })
             suggestRow.addView(c, LinearLayout.LayoutParams(-2, MATCH_PARENT))
         }
@@ -1232,7 +1119,7 @@ class T9Service : InputMethodService() {
         suggestions.forEachIndexed { i, s ->
             val tv = TextView(this).apply {
                 text = shownSuggestion(s); textSize = if (letterMode) 24f else 19f; gravity = Gravity.CENTER
-                setTextColor(if (i == 0 && composingActive() && !(chipFirst && chip != null && !letterMode)) ACCENT else TXT)
+                setTextColor(if (i == 0 && composingActive() && !(chipFirst && chip != null && !letterMode)) accentColor else textColor)
                 setPadding(dp(16), 0, dp(16), 0)
                 setOnClickListener { if (letterMode) pickCandidateLetter(s[0]) else pickSuggestion(s) }
             }
@@ -1247,7 +1134,7 @@ class T9Service : InputMethodService() {
             when {
                 caps -> IconView.SHIFT_CAPS; shift -> IconView.SHIFT_ON; else -> IconView.SHIFT_OFF
             },
-            if (caps || shift) ACCENT else SHIFTOFF
+            if (caps || shift) accentColor else shiftOffColor
         )
         updateKeyLabels()
     }
@@ -1382,7 +1269,7 @@ class T9Service : InputMethodService() {
     }
 
     internal fun updatePredLook() {
-        predView?.setTextColor(if (predictiveEffective()) ACCENT else SUBTXT)
+        predView?.setTextColor(if (predictiveEffective()) accentColor else secondaryTextColor)
     }
 
     private fun pickCandidateLetter(ch: Char) {
@@ -1418,7 +1305,7 @@ class T9Service : InputMethodService() {
         if (::hideOrReturnTool.isInitialized) {
             val isReturn = (target !== t9Page && target !== numPage)
             hideOrReturnTool.text = if (isReturn) "↩" else "⌄"
-            hideOrReturnTool.setTextColor(if (isReturn) ACCENT else ICON)
+            hideOrReturnTool.setTextColor(if (isReturn) accentColor else iconColor)
         }
         if (target === clipPage) refreshClips()
     }
@@ -1461,7 +1348,7 @@ class T9Service : InputMethodService() {
         size: Float = 22f,
         repeat: Boolean = false,
         accel: Boolean = false,
-        bg: Int = KEY,
+        bg: Int = keyColor,
         onLong: (() -> Unit)? = null,
         onClick: () -> Unit
     ): FrameLayout {
@@ -1470,13 +1357,13 @@ class T9Service : InputMethodService() {
         val scaledSize = if (isLandscape) (size * 0.82f) else size
         val main = TextView(this).apply {
             text = label; textSize = scaledSize; gravity = Gravity.CENTER
-            setTextColor(if (accent) ACCENT else TXT)
+            setTextColor(if (accent) accentColor else textColor)
         }
         f.tag = main
         f.addView(main, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
         if (sub != null) {
             val subSize = if (isLandscape) 9f else 11f
-            val s = TextView(this).apply { text = sub; textSize = subSize; setTextColor(SUBTXT) }
+            val s = TextView(this).apply { text = sub; textSize = subSize; setTextColor(secondaryTextColor) }
             f.addView(s, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.END).apply {
                 setMargins(0, 0, dp(4), dp(2))
             })
@@ -1484,7 +1371,7 @@ class T9Service : InputMethodService() {
         if (topSub != null) {
             val topSubSize = if (isLandscape) 10f else 12f
             val ts =
-                TextView(this).apply { text = topSub; textSize = topSubSize; setTextColor(SUBTXT) }
+                TextView(this).apply { text = topSub; textSize = topSubSize; setTextColor(secondaryTextColor) }
             f.addView(ts, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.END).apply {
                 setMargins(0, dp(2), dp(4), 0)
             })
@@ -1532,9 +1419,9 @@ class T9Service : InputMethodService() {
 
     private fun iconKey(kind: Int, repeat: Boolean = false, onClick: () -> Unit): FrameLayout {
         val f = FrameLayout(this)
-        f.background = GradientDrawable().apply { setColor(DIM); cornerRadius = dp(6).toFloat() }
+        f.background = GradientDrawable().apply { setColor(dimColor); cornerRadius = dp(6).toFloat() }
         f.addView(
-            IconView(this, kind, ACCENT, dp(2).toFloat() * 1.2f),
+            IconView(this, kind, accentColor, dp(2).toFloat() * 1.2f),
             FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT)
         )
         bindTouch(f, repeat, null, false, onClick)
@@ -1561,7 +1448,7 @@ class T9Service : InputMethodService() {
             if (autoSpaced && !composingActive()) autoSpaced = false
             else commitWord(true)
         }
-        val gray = SUBTXT
+        val gray = secondaryTextColor
         (k.tag as? TextView)?.apply {
             setTextColor(gray)
             if (label.isNotEmpty()) {
@@ -1646,14 +1533,14 @@ class T9Service : InputMethodService() {
         )
         val row3 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         val sk = key("", accent = true) { onShiftTap() }
-        val shiftIc = IconView(this, IconView.SHIFT_OFF, SHIFTOFF, dp(3).toFloat())
+        val shiftIc = IconView(this, IconView.SHIFT_OFF, shiftOffColor, dp(3).toFloat())
         sk.addView(shiftIc, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
         shiftIcon = shiftIc
         add(row3, sk, 1.3f)
 
         row3Items.forEach { (b, s) -> add(row3, qwertyKey(b, s), 1f) }
 
-        val bk = key("⌫", accent = true, bg = DIM, repeat = true, accel = true) { backspace() }
+        val bk = key("⌫", accent = true, bg = dimColor, repeat = true, accel = true) { backspace() }
         add(row3, bk, 1.3f)
 
         // Row 4: 12# , Space . Enter
@@ -1723,7 +1610,7 @@ class T9Service : InputMethodService() {
         updatePredLook()
         add(right, pk, 1f)
         val sk = key("", accent = true) { onShiftTap() }
-        val shiftIc = IconView(this, IconView.SHIFT_OFF, SHIFTOFF, dp(3).toFloat())
+        val shiftIc = IconView(this, IconView.SHIFT_OFF, shiftOffColor, dp(3).toFloat())
         sk.addView(shiftIc, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
         shiftIcon = shiftIc
         updateShiftLook()
@@ -1866,8 +1753,8 @@ class T9Service : InputMethodService() {
 
     private fun updateSelLook() {
         if (!::selKey.isInitialized) return
-        (selKey.background as? GradientDrawable)?.setColor(if (selectMode) SELBG else KEY)
-        (selKey.tag as? TextView)?.setTextColor(if (selectMode) ACCENT else TXT)
+        (selKey.background as? GradientDrawable)?.setColor(if (selectMode) selectionBackgroundColor else keyColor)
+        (selKey.tag as? TextView)?.setTextColor(if (selectMode) accentColor else textColor)
     }
 
     private fun buildCursorPage(): View {
@@ -1887,7 +1774,7 @@ class T9Service : InputMethodService() {
             iconKey(IconView.UP, repeat = true) { sendNav(KeyEvent.KEYCODE_DPAD_UP) },
             txt("Tümü") { menuAction(android.R.id.selectAll) },
             txt("Kopyala") { menuAction(android.R.id.copy) },
-            key("⌫", accent = true, bg = DIM, repeat = true, accel = true) { backspace() }), 1f
+            key("⌫", accent = true, bg = dimColor, repeat = true, accel = true) { backspace() }), 1f
         )
         add(
             page, row(
@@ -1903,7 +1790,7 @@ class T9Service : InputMethodService() {
             iconKey(IconView.DOWN, repeat = true) { sendNav(KeyEvent.KEYCODE_DPAD_DOWN) },
             txt("Son") { sendNav(KeyEvent.KEYCODE_MOVE_END) },
             txt("Yapıştır") { menuAction(android.R.id.paste) },
-            key("↩", accent = true, bg = DIM) { showPage(t9Page) }), 1f
+            key("↩", accent = true, bg = dimColor) { showPage(t9Page) }), 1f
         )
         return page
     }
@@ -1964,7 +1851,7 @@ class T9Service : InputMethodService() {
     private fun buildNumPage(): View {
         val page = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         fun digit(d: String) = key(d, size = 28f) { typeNum(d) }
-        fun sym(s: String) = key(s, accent = true, bg = DIM, size = 24f) { typeNum(s) }
+        fun sym(s: String) = key(s, accent = true, bg = dimColor, size = 24f) { typeNum(s) }
         fun row(vararg v: View): LinearLayout {
             val r = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
             v.forEachIndexed { i, view ->
@@ -1977,16 +1864,16 @@ class T9Service : InputMethodService() {
             return r
         }
 
-        val back = key("↩", accent = true, bg = DIM, size = 26f) { showPage(t9Page) }
+        val back = key("↩", accent = true, bg = dimColor, size = 26f) { showPage(t9Page) }
         val space = iconKey(IconView.SPACE) {
             endDirect(); currentInputConnection?.commitText(" ", 1)
         }
-        val action = key("↵", accent = true, bg = DIM, size = 26f) { numAction() }
+        val action = key("↵", accent = true, bg = dimColor, size = 26f) { numAction() }
         numActionLabel = action.tag as? TextView
         add(
             page, row(
             sym("+"), digit("1"), digit("2"), digit("3"),
-            key("⌫", accent = true, bg = DIM, repeat = true, accel = true) { numBackspace() }), 1f
+            key("⌫", accent = true, bg = dimColor, repeat = true, accel = true) { numBackspace() }), 1f
         )
         add(page, row(sym("-"), digit("4"), digit("5"), digit("6"), back), 1f)
         add(page, row(sym("."), digit("7"), digit("8"), digit("9"), space), 1f)
@@ -1997,7 +1884,7 @@ class T9Service : InputMethodService() {
     override fun onCreateInputView(): View {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(BG)
+            setBackgroundColor(backgroundColor)
         }
         keyboardRootView = root
         navBottomPx = navInset()
@@ -2014,7 +1901,7 @@ class T9Service : InputMethodService() {
         val toolSize = if (isLandscape) 18f else 22f
         fun tool(txt: String, f: () -> Unit) = TextView(this).apply {
             text = txt; textSize = toolSize; gravity = Gravity.CENTER
-            setTextColor(ICON); setOnClickListener { f() }
+            setTextColor(iconColor); setOnClickListener { f() }
         }
 
         val hideBtn = tool("⌄") {
@@ -2030,7 +1917,7 @@ class T9Service : InputMethodService() {
         fun iconTool(kind: Int, f: () -> Unit): FrameLayout {
             val fv = FrameLayout(this)
             fv.addView(
-                IconView(this, kind, ICON, dp(2).toFloat()),
+                IconView(this, kind, iconColor, dp(2).toFloat()),
                 FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT)
             )
             fv.setOnClickListener { f() }
@@ -2053,7 +1940,7 @@ class T9Service : InputMethodService() {
         suggestScroll.addView(suggestRow, FrameLayout.LayoutParams(-2, MATCH_PARENT))
         closeBtn = TextView(this).apply {
             text = "✕"; textSize = if (isLandscape) 16f else 20f; gravity = Gravity.CENTER
-            setTextColor(ICON); setOnClickListener { dismissBar() }
+            setTextColor(iconColor); setOnClickListener { dismissBar() }
         }
         suggestBox = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -2104,7 +1991,7 @@ class T9Service : InputMethodService() {
 
         renderSuggestions()
 
-        val kbFrame = FrameLayout(this).apply { setBackgroundColor(BG) }
+        val kbFrame = FrameLayout(this).apply { setBackgroundColor(backgroundColor) }
         kbFrame.addView(root, FrameLayout.LayoutParams(MATCH_PARENT, -2))
         keyboardFrameView = kbFrame
         val outer = FrameLayout(this)
@@ -2139,13 +2026,21 @@ class T9Service : InputMethodService() {
         showPage(t9Page)
         val frame = keyboardFrameView ?: return
         val content = contentLayoutView ?: return
-        ResizeOverlay(this, prefs, frame, content, KEY, TXT, ACCENT, navBottomPx) {
+        ResizeOverlay(this, prefs, frame, content, keyColor, textColor, accentColor, navBottomPx) {
             applyRootPadding()
         }.show()
     }
 
     private companion object {
         const val TAG = "T9Service"
-        const val MAX_USER_PAIRS = 8000
     }
+}
+
+internal fun currentTokenContainsAddressMarker(text: String): Boolean {
+    val token = text.takeLastWhile { !it.isWhitespace() }
+    return token.contains("@") ||
+            token.contains("www.") ||
+            token.contains(".com") ||
+            token.contains(".net") ||
+            token.contains(".org")
 }
