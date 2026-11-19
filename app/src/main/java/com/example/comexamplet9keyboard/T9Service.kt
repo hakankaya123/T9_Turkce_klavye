@@ -1286,7 +1286,7 @@ class T9Service : InputMethodService() {
         if (!::leftCol.isInitialized) return
         // Sembol tuşları sabit; her tuş basışında 4 tuşu baştan üretmek gereksizdi.
         if (leftCol.childCount > 0) return
-        listOf("!", "?", "'", "~").forEach { sym -> add(leftCol, key(sym) { typeText(sym) }, 1f) }
+        listOf("-", "?", "'", "_").forEach { sym -> add(leftCol, key(sym) { typeText(sym) }, 1f) }
     }
 
     internal fun showPage(p: View, toggle: Boolean = true) {
