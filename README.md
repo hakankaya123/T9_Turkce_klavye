@@ -79,4 +79,4 @@ Hata bildirimi ve öneriler için **Issues** bölümünü kullanabilirsiniz. Pul
 
 ## Lisans
 
-Henüz bir lisans eklenmedi. Eklemek isterseniz GitHub'da *Add file → Create new file → LICENSE* yolunu izleyip bir lisans şablonu seçebilirsiniz.
+Bu proje MIT Lisansı ile lisanslanmıştır. Ayrıntılar için [LICENSE](./LICENSE) dosyasına bakın.
