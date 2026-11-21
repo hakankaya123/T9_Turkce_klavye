@@ -7,6 +7,7 @@ import android.os.Bundle
 import android.text.Editable
 import android.text.TextWatcher
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
 import android.widget.EditText
 import android.widget.FrameLayout
@@ -18,6 +19,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.graphics.toColorInt
 import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import java.util.Locale
 import androidx.core.view.WindowInsetsControllerCompat
@@ -39,6 +41,9 @@ class UserDictionaryActivity : AppCompatActivity() {
     private lateinit var countText: TextView
     private lateinit var statusText: TextView
     private lateinit var inputSmart: EditText
+    private lateinit var wordsScroll: ScrollView
+    private lateinit var scrollbarTrack: View
+    private lateinit var scrollbarThumb: View
     private lateinit var btnAdd: TextView      // "Ekle" butonu (kelime sözlükte yoksa)
     private lateinit var btnEdit: TextView     // "Düzenle" butonu (kelime sözlükte varsa)
     private lateinit var btnDelete: TextView   // "Sil" butonu (kelime sözlükte varsa)
@@ -47,6 +52,8 @@ class UserDictionaryActivity : AppCompatActivity() {
     private var filterQuery = ""
     private var visibleLimit =
         50   // her seferinde en fazla bu kadar kart çizilir (hızlı silme/yazma için)
+    private var scrollbarTouchStartY = 0f
+    private var scrollbarTouchStartScroll = 0
 
     // ── Yedekleme: dosya seçiciler (ek izin gerekmez) ──
     private val exportLauncher =
@@ -212,13 +219,18 @@ class UserDictionaryActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        WindowCompat.setDecorFitsSystemWindows(window, false)
         WindowInsetsControllerCompat(window, window.decorView).isAppearanceLightStatusBars = false // Açık renk simgeler için false
         WindowInsetsControllerCompat(window, window.decorView).isAppearanceLightNavigationBars = false
 // true: Koyu renk simgeler (açık arka plan için)
 // false: Açık renk simgeler (koyu arka plan için)
 
         val root = FrameLayout(this).apply { setBackgroundColor(BG) }
-        val scroll = ScrollView(this).apply { isFillViewport = true }
+        wordsScroll = ScrollView(this).apply {
+            isFillViewport = true
+            isVerticalScrollBarEnabled = false
+            setOnScrollChangeListener { _, _, _, _, _ -> updateScrollbar() }
+        }
 
         val container = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -226,9 +238,17 @@ class UserDictionaryActivity : AppCompatActivity() {
         }
 
         ViewCompat.setOnApplyWindowInsetsListener(root) { _, insets ->
-            val statusBarHeight = insets.getInsets(WindowInsetsCompat.Type.statusBars()).top
-            val navBarHeight = insets.getInsets(WindowInsetsCompat.Type.navigationBars()).bottom
-            container.setPadding(dp(16), statusBarHeight + dp(12), dp(16), navBarHeight + dp(16))
+            val systemBars = insets.getInsets(
+                WindowInsetsCompat.Type.statusBars() or WindowInsetsCompat.Type.navigationBars()
+            )
+            val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
+            root.setPadding(
+                systemBars.left,
+                systemBars.top,
+                systemBars.right,
+                maxOf(systemBars.bottom, ime.bottom)
+            )
+            wordsScroll.post { updateScrollbar() }
             insets
         }
 
@@ -446,8 +466,80 @@ class UserDictionaryActivity : AppCompatActivity() {
         }
         container.addView(wordsContainer)
 
-        scroll.addView(container)
-        root.addView(scroll)
+        wordsScroll.addView(container)
+        root.addView(wordsScroll)
+
+        scrollbarTrack = View(this).apply {
+            background = GradientDrawable().apply {
+                setColor(ITEM_BG)
+                cornerRadius = dp(3).toFloat()
+            }
+            visibility = View.GONE
+            setOnTouchListener { _, event ->
+                if (event.actionMasked == MotionEvent.ACTION_DOWN ||
+                    event.actionMasked == MotionEvent.ACTION_MOVE
+                ) {
+                    val contentHeight = wordsScroll.getChildAt(0)?.height ?: 0
+                    val scrollRange = (contentHeight - wordsScroll.height).coerceAtLeast(0)
+                    if (scrollRange > 0) {
+                        val thumbHeight = dp(64)
+                        val usableHeight = (height - thumbHeight).coerceAtLeast(1)
+                        val thumbTop = (event.y - thumbHeight / 2f).coerceIn(0f, usableHeight.toFloat())
+                        val progress = thumbTop / usableHeight
+                        wordsScroll.scrollTo(0, (progress * scrollRange).toInt())
+                    }
+                    true
+                } else {
+                    true
+                }
+            }
+        }
+        scrollbarThumb = View(this).apply {
+            background = GradientDrawable().apply {
+                setColor(ACCENT)
+                cornerRadius = dp(5).toFloat()
+            }
+            visibility = View.GONE
+            setOnTouchListener { view, event ->
+                when (event.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> {
+                        scrollbarTouchStartY = event.rawY
+                        scrollbarTouchStartScroll = wordsScroll.scrollY
+                        view.parent.requestDisallowInterceptTouchEvent(true)
+                        true
+                    }
+                    MotionEvent.ACTION_MOVE -> {
+                        val viewportHeight = wordsScroll.height
+                        val thumbHeight = view.height
+                        val thumbTravel = (viewportHeight - thumbHeight).coerceAtLeast(1)
+                        val content = wordsScroll.getChildAt(0)?.height ?: 0
+                        val scrollRange = (content - viewportHeight).coerceAtLeast(0)
+                        val delta = event.rawY - scrollbarTouchStartY
+                        val target = scrollbarTouchStartScroll +
+                            (delta * scrollRange / thumbTravel).toInt()
+                        wordsScroll.scrollTo(0, target.coerceIn(0, scrollRange))
+                        true
+                    }
+                    else -> {
+                        view.parent.requestDisallowInterceptTouchEvent(false)
+                        true
+                    }
+                }
+            }
+        }
+        val trackParams = FrameLayout.LayoutParams(dp(12), -1).apply {
+            gravity = Gravity.END
+            marginEnd = dp(6)
+            topMargin = dp(4)
+            bottomMargin = dp(4)
+        }
+        val thumbParams = FrameLayout.LayoutParams(dp(16), dp(64)).apply {
+            gravity = Gravity.END
+            marginEnd = dp(4)
+        }
+        root.addView(scrollbarTrack, trackParams)
+        root.addView(scrollbarThumb, thumbParams)
+        wordsScroll.viewTreeObserver.addOnGlobalLayoutListener { updateScrollbar() }
         setContentView(root)
 
         refreshList()
@@ -481,6 +573,42 @@ class UserDictionaryActivity : AppCompatActivity() {
         allWords = UserDictionaryStore.load(this)
         allWords.sortWith { a, b -> collator.compare(a.word, b.word) }
         renderList()
+    }
+
+    private fun updateScrollbar() {
+        if (!::wordsScroll.isInitialized ||
+            !::scrollbarTrack.isInitialized ||
+            !::scrollbarThumb.isInitialized
+        ) {
+            return
+        }
+
+        val viewportHeight = wordsScroll.height
+        val contentHeight = wordsScroll.getChildAt(0)?.height ?: 0
+        val scrollRange = (contentHeight - viewportHeight).coerceAtLeast(0)
+        if (viewportHeight <= 0 || scrollRange <= 0) {
+            scrollbarTrack.visibility = View.GONE
+            scrollbarThumb.visibility = View.GONE
+            return
+        }
+
+        val thumbHeight = dp(64)
+        val thumbParams = scrollbarThumb.layoutParams as FrameLayout.LayoutParams
+        thumbParams.height = thumbHeight
+        val trackParams = scrollbarTrack.layoutParams as FrameLayout.LayoutParams
+        trackParams.height = (viewportHeight - dp(8)).coerceAtLeast(dp(24))
+        trackParams.topMargin = dp(4)
+        trackParams.bottomMargin = dp(4)
+
+        val thumbTravel = (viewportHeight - thumbHeight - dp(8)).coerceAtLeast(1)
+        val progress = wordsScroll.scrollY.toFloat() / scrollRange
+        thumbParams.topMargin = dp(4) + (progress * thumbTravel).toInt()
+        thumbParams.bottomMargin = 0
+
+        scrollbarTrack.visibility = View.VISIBLE
+        scrollbarThumb.visibility = View.VISIBLE
+        scrollbarTrack.layoutParams = trackParams
+        scrollbarThumb.layoutParams = thumbParams
     }
 
     private fun renderList() {
@@ -653,6 +781,8 @@ class UserDictionaryActivity : AppCompatActivity() {
             }
             wordsContainer.addView(more, LinearLayout.LayoutParams(-1, -2))
         }
+
+        wordsScroll.post { updateScrollbar() }
     }
 
     private fun showEditDialog(userWord: UserWord) {
