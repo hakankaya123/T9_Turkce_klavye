@@ -22,6 +22,7 @@ import android.view.inputmethod.InputMethodManager
 import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
+import android.widget.PopupWindow
 import android.widget.TextView
 import androidx.core.content.edit
 import androidx.core.graphics.toColorInt
@@ -231,7 +232,7 @@ class T9Service : InputMethodService() {
     internal lateinit var clipLeft: LinearLayout
     internal lateinit var clipRight: LinearLayout
     private lateinit var selKey: FrameLayout
-    private lateinit var hideOrReturnTool: TextView
+    private lateinit var hideOrReturnTool: IconView
     private var selectMode = false
     private var autoSpaced = false
     private val spacePunct = setOf(".", ",", "?", "!", ":", ";", "…")
@@ -1304,8 +1305,10 @@ class T9Service : InputMethodService() {
         pages.forEach { it.visibility = if (it === target) View.VISIBLE else View.GONE }
         if (::hideOrReturnTool.isInitialized) {
             val isReturn = (target !== t9Page && target !== numPage)
-            hideOrReturnTool.text = if (isReturn) "↩" else "⌄"
-            hideOrReturnTool.setTextColor(if (isReturn) accentColor else iconColor)
+            hideOrReturnTool.setLook(
+                if (isReturn) IconView.RETURN else IconView.HIDE,
+                if (isReturn) accentColor else iconColor
+            )
         }
         if (target === clipPage) refreshClips()
     }
@@ -1429,18 +1432,303 @@ class T9Service : InputMethodService() {
     }
 
     private fun t9Key(label: String, chars: String, digit: String): View {
-        val k = key(
+        val keyView = key(
             if (digit == "1") label else label.lowercase(tr),
-            digit,
-            onLong = { typeText(digit) }) {
+            digit) {
             when {
                 digit == "1" -> tapSymbolKey()
                 predictiveEffective() -> tapPredictive(digit[0])
                 else -> tapMulti(label, chars)
             }
         }
-        if (digit != "1") letterLabels.add((k.tag as TextView) to label)
-        return k
+        val popupOptions = when (digit) {
+            "1" -> listOf("1", "@", "/", "*", "#", "%", ":")
+            "4" -> listOf("4", "g", "h", "i", "ı", "ğ", "î")
+            "3", "6", "9" -> chars.map { it.toString() } + digit
+            else -> listOf(digit) + chars.map { it.toString() }
+        }
+        bindT9PopupTouch(keyView, popupOptions, digit, if (digit == "4") 4 else null)
+        if (digit != "1") letterLabels.add((keyView.tag as TextView) to label)
+        return keyView
+    }
+
+    private data class T9LetterPopup(
+        val window: PopupWindow,
+        val optionRow: LinearLayout,
+        val optionViews: MutableList<TextView>,
+        val optionWidth: Int
+    )
+
+    private fun bindT9PopupTouch(
+        keyView: View,
+        options: List<String>,
+        digit: String,
+        pageBreakAfter: Int?
+    ) {
+        var popup: T9LetterPopup? = null
+        var selectedIndex = options.indexOf(digit).takeIf { it >= 0 } ?: options.lastIndex
+        var longPressed = false
+        var cancelled = false
+        var downX = 0f
+        var downY = 0f
+        var lastStepX = 0f
+        val touchSlop = android.view.ViewConfiguration.get(this).scaledTouchSlop
+        val swipeStep = dp(12).toFloat()
+        val selectionDirection = if (options.indexOf(digit) == 0) 1 else -1
+
+        fun updateSwipeSelection(rawX: Float) {
+            if (!longPressed) return
+            val deltaX = rawX - lastStepX
+            val stepDirection = when {
+                deltaX * selectionDirection >= swipeStep -> selectionDirection
+                deltaX * selectionDirection <= -swipeStep -> -selectionDirection
+                else -> 0
+            }
+            if (stepDirection == 0) return
+            val nextIndex = (selectedIndex + stepDirection).coerceIn(options.indices)
+            if (nextIndex != selectedIndex) {
+                selectedIndex = nextIndex
+                lastStepX += stepDirection * swipeStep
+                popup?.let {
+                    updateT9PopupPage(it, options, pageBreakAfter, selectedIndex, digit)
+                }
+            }
+        }
+
+        val showPopup = Runnable {
+            if (!keyView.isPressed || cancelled) return@Runnable
+            longPressed = true
+            keyView.alpha = 1f
+            popup = showT9LetterPopup(keyView, options, pageBreakAfter, selectedIndex, digit)
+        }
+
+        keyView.setOnTouchListener { view, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    downX = event.rawX
+                    downY = event.rawY
+                    lastStepX = event.rawX
+                    longPressed = false
+                    cancelled = false
+                    selectedIndex = options.indexOf(digit).takeIf { it >= 0 } ?: options.lastIndex
+                    view.isPressed = true
+                    view.alpha = 0.65f
+                    view.parent?.requestDisallowInterceptTouchEvent(true)
+                    handler.postDelayed(
+                        showPopup,
+                        android.view.ViewConfiguration.getLongPressTimeout().toLong()
+                    )
+                    true
+                }
+
+                MotionEvent.ACTION_MOVE -> {
+                    if (!longPressed && !cancelled &&
+                        (kotlin.math.abs(event.rawX - downX) > touchSlop ||
+                            kotlin.math.abs(event.rawY - downY) > touchSlop)
+                    ) {
+                        cancelled = true
+                        handler.removeCallbacks(showPopup)
+                        view.isPressed = false
+                        view.alpha = 1f
+                    }
+                    updateSwipeSelection(event.rawX)
+                    true
+                }
+
+                MotionEvent.ACTION_UP -> {
+                    handler.removeCallbacks(showPopup)
+                    updateSwipeSelection(event.rawX)
+                    view.isPressed = false
+                    view.alpha = 1f
+                    view.parent?.requestDisallowInterceptTouchEvent(false)
+                    if (longPressed) {
+                        popup?.window?.dismiss()
+                        if (selectedIndex in options.indices) {
+                            playClick()
+                            applyT9PopupChoice(
+                                digit,
+                                options[selectedIndex]
+                            )
+                        }
+                    } else if (!cancelled) {
+                        playClick()
+                        view.performClick()
+                    }
+                    popup = null
+                    true
+                }
+
+                MotionEvent.ACTION_CANCEL -> {
+                    handler.removeCallbacks(showPopup)
+                    popup?.window?.dismiss()
+                    popup = null
+                    view.isPressed = false
+                    view.alpha = 1f
+                    view.parent?.requestDisallowInterceptTouchEvent(false)
+                    true
+                }
+
+                else -> true
+            }
+        }
+    }
+
+    private fun showT9LetterPopup(
+        anchor: View,
+        options: List<String>,
+        pageBreakAfter: Int?,
+        selectedIndex: Int,
+        digit: String
+    ): T9LetterPopup {
+        val popupContent = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setPadding(dp(4), dp(8), dp(4), dp(8))
+            background = GradientDrawable().apply {
+                setColor("#3E4447".toColorInt())
+                cornerRadius = dp(3).toFloat()
+            }
+        }
+        val popup = PopupWindow(popupContent, -2, -2, false).apply {
+            isFocusable = false
+            isTouchable = false
+            elevation = dp(8).toFloat()
+        }
+        val optionRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+        }
+        popupContent.addView(optionRow)
+        val visibleSlots = if (pageBreakAfter == null) {
+            options.size
+        } else {
+            maxOf(pageBreakAfter + 1, options.size - pageBreakAfter + 2)
+        }
+        val availableCellWidth = (resources.displayMetrics.widthPixels - dp(32))
+            .coerceAtLeast(dp(30) * visibleSlots) / visibleSlots
+        val optionWidth = minOf(dp(48), availableCellWidth)
+        val shown = T9LetterPopup(popup, optionRow, mutableListOf(), optionWidth)
+        updateT9PopupPage(shown, options, pageBreakAfter, selectedIndex, digit)
+
+        popupContent.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED)
+        val loc = IntArray(2)
+        anchor.getLocationOnScreen(loc)
+        val screenWidth = resources.displayMetrics.widthPixels
+        val margin = dp(8)
+        val targetX = (loc[0] + (anchor.width - popupContent.measuredWidth) / 2)
+            .coerceIn(margin, (screenWidth - popupContent.measuredWidth - margin).coerceAtLeast(margin))
+        popup.showAsDropDown(
+            anchor,
+            targetX - loc[0],
+            -popupContent.measuredHeight - anchor.height - dp(8)
+        )
+        return shown
+    }
+
+    private fun updateT9PopupPage(
+        popup: T9LetterPopup,
+        options: List<String>,
+        pageBreakAfter: Int?,
+        selectedIndex: Int,
+        digit: String
+    ) {
+        popup.optionRow.removeAllViews()
+        popup.optionViews.clear()
+        val isSecondPage = pageBreakAfter != null && selectedIndex >= pageBreakAfter
+        val visibleIndices = if (pageBreakAfter == null) {
+            options.indices.toList()
+        } else if (isSecondPage) {
+            pageBreakAfter until options.size
+        } else {
+            0 until pageBreakAfter
+        }
+
+        fun addItem(label: String, optionIndex: Int? = null) {
+            val option = TextView(this).apply {
+                text = label
+                textSize = if (optionIndex == null) 24f else 28f
+                gravity = Gravity.CENTER
+                setTextColor(textColor)
+                if (optionIndex == null) setTextColor(secondaryTextColor)
+            }
+            popup.optionRow.addView(
+                option,
+                LinearLayout.LayoutParams(popup.optionWidth, dp(76))
+            )
+            if (optionIndex != null) popup.optionViews.add(option)
+        }
+
+        if (isSecondPage) addItem("‹")
+        visibleIndices.forEach { index ->
+            val value = options[index]
+            addItem(
+                if (value.length == 1 && value[0].isLetter() && (shift || caps)) {
+                    value.uppercase(tr)
+                } else {
+                    value
+                },
+                index
+            )
+        }
+        if (pageBreakAfter != null) {
+            if (isSecondPage) {
+                popup.optionRow.addView(
+                    View(this),
+                    LinearLayout.LayoutParams(popup.optionWidth, dp(76))
+                )
+            } else {
+                addItem("›")
+            }
+        }
+        val localSelectedIndex = visibleIndices.indexOf(selectedIndex)
+        updateT9PopupSelection(popup.optionViews, localSelectedIndex, digit)
+    }
+
+    private fun updateT9PopupSelection(
+        views: List<TextView>,
+        selectedIndex: Int,
+        digit: String
+    ) {
+        views.forEachIndexed { index, option ->
+            option.background = if (index == selectedIndex) {
+                GradientDrawable().apply {
+                    setColor("#73797B".toColorInt())
+                    cornerRadius = dp(3).toFloat()
+                }
+            } else {
+                null
+            }
+            option.setTextColor(
+                if (index == selectedIndex) Color.WHITE
+                else if (option.text.toString() == digit) accentColor else Color.WHITE
+            )
+        }
+    }
+
+    private fun applyT9PopupChoice(digit: String, choice: String) {
+        when {
+            choice == digit -> typeText(digit)
+            choice.length == 1 && choice[0].isLetter() -> typeT9PopupLetter(digit, choice[0])
+            else -> typeText(choice)
+        }
+    }
+
+    private fun typeT9PopupLetter(digit: String, letter: Char) {
+        if (predictiveEffective()) {
+            tapPredictive(digit.first())
+            val index = seq.lastIndex
+            if (index >= 0) {
+                forced[index] = letter.lowercase(tr).first()
+                currentInputConnection?.let { refreshPredictive(it) }
+            }
+        } else {
+            val output = if (shift || caps) letter.toString().uppercase(tr) else letter.toString()
+            typeText(output)
+        }
+        if (shift) {
+            shift = false
+            updateShiftLook()
+        }
     }
 
     internal fun spaceKey(label: String, w: Float = 1f): View {
@@ -1898,14 +2186,31 @@ class T9Service : InputMethodService() {
         }
 
         val topFrame = FrameLayout(this)
-        iconBar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        iconBar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setBackgroundColor("#242424".toColorInt())
+        }
         val toolSize = if (isLandscape) 18f else 22f
         fun tool(txt: String, f: () -> Unit) = TextView(this).apply {
             text = txt; textSize = toolSize; gravity = Gravity.CENTER
             setTextColor(iconColor); setOnClickListener { f() }
         }
 
-        val hideBtn = tool("⌄") {
+        fun iconTool(kind: Int, description: String, f: () -> Unit): IconView {
+            return IconView(this, kind, iconColor, dp(2).toFloat()).apply {
+                isClickable = true
+                isFocusable = true
+                contentDescription = description
+                background = android.graphics.drawable.RippleDrawable(
+                    android.content.res.ColorStateList.valueOf("#33FFFFFF".toColorInt()),
+                    null,
+                    null
+                )
+                setOnClickListener { f() }
+            }
+        }
+
+        val hideBtn = iconTool(IconView.HIDE, "Klavyeyi gizle") {
             if (::t9Page.isInitialized && ::numPage.isInitialized &&
                 t9Page.visibility != View.VISIBLE && numPage.visibility != View.VISIBLE
             ) {
@@ -1915,21 +2220,12 @@ class T9Service : InputMethodService() {
             }
         }
 
-        fun iconTool(kind: Int, f: () -> Unit): FrameLayout {
-            val fv = FrameLayout(this)
-            fv.addView(
-                IconView(this, kind, iconColor, dp(2).toFloat()),
-                FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT)
-            )
-            fv.setOnClickListener { f() }
-            return fv
-        }
         hideOrReturnTool = hideBtn
         listOf(
             tool("☰") { showPage(settingsPage) },
-            iconTool(IconView.CURSOR) { showPage(cursorPage) },
-            tool("📋") { showPage(clipPage) },
-            tool("☺") { showPage(emojiPage) },
+            iconTool(IconView.CURSOR, "Metin imleci") { showPage(cursorPage) },
+            iconTool(IconView.CLIPBOARD, "Pano") { showPage(clipPage) },
+            iconTool(IconView.EMOJI, "Emojiler") { showPage(emojiPage) },
             hideBtn
         ).forEach { iconBar.addView(it, LinearLayout.LayoutParams(0, MATCH_PARENT, 1f)) }
         suggestLeftSpacer = View(this)
